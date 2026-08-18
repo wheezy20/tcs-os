@@ -145,3 +145,11 @@ UNFOLD = {
 
 # Email — swap to a real backend (SMTP/SendGrid/etc.) when comms are built in Phase 2+
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="admissions@tcsch.edu.gh")
+
+# Supabase Storage — used to mint signed upload/download URLs for admissions documents.
+# Module-specific (only admissions uses it today), but the credentials are the same
+# Supabase project as DATABASE_URL so they live at the project level, not per-app.
+SUPABASE_URL = env("SUPABASE_URL", default="")
+SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", default="")
+SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-documents")

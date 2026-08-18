@@ -1,5 +1,14 @@
 from rest_framework import serializers
-from .models import Family, Guardian, Student, Application
+from .models import Family, Guardian, Student, Application, Document
+
+# Grades where TCS requires proof of vaccination on a formal Application.
+# Checked against the grade being applied for, not the child's current grade.
+PRESCHOOL_GRADES = {"Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "Kindergarten 2"}
+
+# The 3 document types collected on the public Application form. Document.TYPE_CHOICES
+# has more (proof_of_funds, passport_photo, birth_certificate, other) reserved for later phases.
+APPLICATION_DOCUMENT_TYPES = {"proof_of_vaccination", "financial_clearance", "previous_report"}
+_APPLICATION_DOCUMENT_CHOICES = [c for c in Document.TYPE_CHOICES if c[0] in APPLICATION_DOCUMENT_TYPES]
 
 
 class InquiryGuardianSerializer(serializers.Serializer):
@@ -96,3 +105,128 @@ class InquirySerializer(serializers.Serializer):
 
         family.created_applications = created_applications
         return family
+
+
+class ApplicationDocumentSerializer(serializers.Serializer):
+    document_type = serializers.ChoiceField(choices=_APPLICATION_DOCUMENT_CHOICES)
+    file_path = serializers.CharField(max_length=500)
+
+
+class ApplicationSerializer(serializers.Serializer):
+    """Public-facing serializer for POST /api/admissions/applications/. Unlike
+    InquirySerializer this is single-child — an Application is inherently
+    per-student. Open to anyone, not gated behind a prior Inquiry: matches an
+    existing Family/Guardian/Student (by guardian email, then student
+    name+DOB) and reuses it rather than creating a duplicate, and advances an
+    existing inquiry-stage Application to 'application' rather than creating
+    a second row for the same student/year/grade. See
+    docs/admissions/02-stack-and-schema.md for the matching rules and their
+    known limitations."""
+
+    guardians = InquiryGuardianSerializer(many=True, min_length=1, max_length=2)
+    student = InquiryStudentSerializer()
+    documents = ApplicationDocumentSerializer(many=True, required=False)
+
+    def validate(self, data):
+        student_data = data.get("student", {})
+        documents_data = data.get("documents", [])
+        if student_data.get("year_group_applied_for") in PRESCHOOL_GRADES:
+            has_vaccination_proof = any(
+                doc["document_type"] == "proof_of_vaccination" for doc in documents_data
+            )
+            if not has_vaccination_proof:
+                raise serializers.ValidationError(
+                    {"documents": "Proof of vaccination is required for preschool applicants."}
+                )
+        return data
+
+    def to_representation(self, instance):
+        """`instance` is the Application returned by create()."""
+        return {
+            "application_id": instance.pk,
+            "family_id": instance.student.family_id,
+            "stage": instance.stage,
+            "student_full_name": instance.student.full_name,
+            "year_group_applied_for": instance.year_group_applied_for,
+            "academic_year": instance.academic_year,
+        }
+
+    def create(self, validated_data):
+        guardians_data = validated_data["guardians"]
+        student_data = validated_data["student"]
+        documents_data = validated_data.get("documents", [])
+
+        family = None
+        for guardian_data in guardians_data:
+            existing_guardian = (
+                Guardian.objects.filter(email__iexact=guardian_data["email"])
+                .select_related("family")
+                .first()
+            )
+            if existing_guardian:
+                family = existing_guardian.family
+                break
+        if family is None:
+            family = Family.objects.create()
+
+        for guardian_data in guardians_data:
+            guardian = family.guardians.filter(email__iexact=guardian_data["email"]).first()
+            if guardian:
+                for field, value in guardian_data.items():
+                    setattr(guardian, field, value)
+                guardian.save()
+            else:
+                Guardian.objects.create(family=family, **guardian_data)
+
+        student = family.students.filter(
+            full_name__iexact=student_data["full_name"],
+            date_of_birth=student_data["date_of_birth"],
+        ).first()
+        if student:
+            student.current_school = student_data["current_school"]
+            student.current_grade = student_data["current_grade"]
+            student.save()
+        else:
+            student = Student.objects.create(
+                family=family,
+                full_name=student_data["full_name"],
+                date_of_birth=student_data["date_of_birth"],
+                current_school=student_data["current_school"],
+                current_grade=student_data["current_grade"],
+            )
+
+        application = student.applications.filter(
+            academic_year=student_data["academic_year"],
+            year_group_applied_for=student_data["year_group_applied_for"],
+        ).first()
+        if application:
+            application.stage = "application"
+            application.month_of_enrollment = student_data["month_of_enrollment"]
+            application.save()
+        else:
+            application = Application.objects.create(
+                student=student,
+                stage="application",
+                academic_year=student_data["academic_year"],
+                year_group_applied_for=student_data["year_group_applied_for"],
+                month_of_enrollment=student_data["month_of_enrollment"],
+            )
+
+        for doc in documents_data:
+            Document.objects.create(
+                application=application,
+                document_type=doc["document_type"],
+                file_path=doc["file_path"],
+                status="pending_review",
+            )
+
+        return application
+
+
+class UploadURLRequestSerializer(serializers.Serializer):
+    """POST /api/admissions/upload-url/ — mints a signed Supabase Storage
+    upload URL for one document. document_type is restricted to the types
+    actually collected on the Application form."""
+
+    document_type = serializers.ChoiceField(choices=_APPLICATION_DOCUMENT_CHOICES)
+    filename = serializers.CharField(max_length=255)

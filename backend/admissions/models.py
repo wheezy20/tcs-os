@@ -92,22 +92,31 @@ class Application(models.Model):
 
 class Document(models.Model):
     TYPE_CHOICES = [
+        ("proof_of_vaccination", "Proof of Vaccination"),
+        ("financial_clearance", "Proof of Financial Clearance from Previous School"),
+        ("previous_report", "Report Card / Transcript from Previous School"),
         ("proof_of_funds", "Proof of Funds"),
-        ("previous_report", "Previous School Report"),
         ("passport_photo", "Passport Photograph"),
         ("birth_certificate", "Birth Certificate"),
         ("other", "Other"),
     ]
     STATUS_CHOICES = [
         ("required", "Required"),
-        ("uploaded", "Uploaded"),
+        ("pending_review", "Pending Review"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
     ]
 
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="documents")
     document_type = models.CharField(max_length=30, choices=TYPE_CHOICES)
-    file_url = models.URLField(blank=True, help_text="URL of the file in Supabase Storage")
+    file_path = models.CharField(
+        max_length=500, blank=True,
+        help_text="Path within the Supabase Storage bucket — not a URL. The bucket is "
+        "private, so viewing a document means minting a fresh signed URL on demand "
+        "(see admissions/storage.py) rather than storing one, since a signed URL "
+        "created before the file exists would 404, and one stored long-term would "
+        "eventually expire silently.",
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="required")
     uploaded_at = models.DateTimeField(null=True, blank=True)
 
