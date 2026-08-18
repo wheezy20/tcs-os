@@ -11,14 +11,16 @@
 ## Phase 1 domain model
 
 ```
-Family
- ├── Parent/Guardian (name, email, phone, relationship to student)
- └── Student
-      └── Application
+Family (referral_source, comments)
+ ├── Parent/Guardian ×1-2 (name, email, phone, relationship, religion, address, town/city)
+ └── Student ×1-5 (name, DOB, current school, current grade)
+      └── Application  (one per student — academic_year, grade applied for, month of enrollment)
            ├── ApplicationStage  (Inquiry → Application → Document Review → Offer → Enrolled)
            ├── Document          (type, file_url, status: required/uploaded/approved/rejected)
            └── Notes (internal, staff-only)
 ```
+
+A single inquiry submission can cover multiple children (siblings) and up to two guardians in one call — see `InquirySerializer` in `admissions/serializers.py` for the exact nested shape.
 
 Django models (rough, refine when building):
 
