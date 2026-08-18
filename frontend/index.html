@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admissions Inquiry</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card-bg: #ffffff;
+    --border: #d9dce1;
+    --text: #1f2430;
+    --text-muted: #6b7280;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --error: #dc2626;
+    --error-bg: #fef2f2;
+    --success: #15803d;
+    --success-bg: #f0fdf4;
+    --radius: 8px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2.5rem 1rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+  }
+
+  main {
+    width: 100%;
+    max-width: 560px;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .subtitle {
+    color: var(--text-muted);
+    margin-top: 0;
+    margin-bottom: 1.75rem;
+    font-size: 0.95rem;
+  }
+
+  form {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.75rem;
+  }
+
+  fieldset {
+    border: none;
+    padding: 0;
+    margin: 0 0 1.5rem 0;
+  }
+
+  fieldset:last-of-type {
+    margin-bottom: 0;
+  }
+
+  legend {
+    font-weight: 600;
+    font-size: 0.95rem;
+    padding: 0 0 0.75rem 0;
+    width: 100%;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1rem;
+  }
+
+  .field {
+    margin-bottom: 1rem;
+  }
+
+  .field:last-child {
+    margin-bottom: 0;
+  }
+
+  .row {
+    display: flex;
+    gap: 1rem;
+  }
+
+  .row .field {
+    flex: 1;
+  }
+
+  label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-bottom: 0.35rem;
+  }
+
+  label .required {
+    color: var(--error);
+  }
+
+  input, select {
+    width: 100%;
+    padding: 0.55rem 0.65rem;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+    font-family: inherit;
+  }
+
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+
+  input:invalid {
+    box-shadow: none;
+  }
+
+  .hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+  }
+
+  button {
+    width: 100%;
+    padding: 0.7rem 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--primary);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled) {
+    background: var(--primary-hover);
+  }
+
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .message {
+    display: none;
+    margin-bottom: 1.25rem;
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .message.visible {
+    display: block;
+  }
+
+  .message.success {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid #bbf7d0;
+  }
+
+  .message.error {
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid #fecaca;
+  }
+
+  .message ul {
+    margin: 0.4rem 0 0 1.1rem;
+    padding: 0;
+  }
+
+  .field-error {
+    color: var(--error);
+    font-size: 0.78rem;
+    margin-top: 0.3rem;
+    display: none;
+  }
+
+  .field-error.visible {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Admissions Inquiry</h1>
+  <p class="subtitle">Tell us about your family and we'll be in touch about next steps.</p>
+
+  <div id="form-message" class="message" role="status" aria-live="polite"></div>
+
+  <form id="inquiry-form" novalidate>
+    <fieldset>
+      <legend>Guardian details</legend>
+
+      <div class="field">
+        <label for="guardian_full_name">Full name <span class="required">*</span></label>
+        <input type="text" id="guardian_full_name" name="guardian_full_name" required />
+        <div class="field-error" data-error-for="guardian_full_name"></div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="guardian_email">Email <span class="required">*</span></label>
+          <input type="email" id="guardian_email" name="guardian_email" required />
+          <div class="field-error" data-error-for="guardian_email"></div>
+        </div>
+        <div class="field">
+          <label for="guardian_phone">Phone <span class="required">*</span></label>
+          <input type="tel" id="guardian_phone" name="guardian_phone" required />
+          <div class="field-error" data-error-for="guardian_phone"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="guardian_relationship">Relationship to student <span class="required">*</span></label>
+        <select id="guardian_relationship" name="guardian_relationship" required>
+          <option value="" disabled selected>Select one</option>
+          <option value="mother">Mother</option>
+          <option value="father">Father</option>
+          <option value="guardian">Guardian</option>
+          <option value="other">Other</option>
+        </select>
+        <div class="field-error" data-error-for="guardian_relationship"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Student details</legend>
+
+      <div class="field">
+        <label for="student_full_name">Full name <span class="required">*</span></label>
+        <input type="text" id="student_full_name" name="student_full_name" required />
+        <div class="field-error" data-error-for="student_full_name"></div>
+      </div>
+
+      <div class="field">
+        <label for="student_date_of_birth">Date of birth</label>
+        <input type="date" id="student_date_of_birth" name="student_date_of_birth" />
+        <div class="field-error" data-error-for="student_date_of_birth"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Application details</legend>
+
+      <div class="row">
+        <div class="field">
+          <label for="academic_year">Academic year <span class="required">*</span></label>
+          <input type="text" id="academic_year" name="academic_year" placeholder="2026/2027" pattern="\d{4}/\d{4}" required />
+          <div class="hint">Format: 2026/2027</div>
+          <div class="field-error" data-error-for="academic_year"></div>
+        </div>
+        <div class="field">
+          <label for="year_group_applied_for">Grade / year group <span class="required">*</span></label>
+          <input type="text" id="year_group_applied_for" name="year_group_applied_for" placeholder="e.g. Grade 1, KG2" required />
+          <div class="field-error" data-error-for="year_group_applied_for"></div>
+        </div>
+      </div>
+    </fieldset>
+
+    <button type="submit" id="submit-btn">Submit inquiry</button>
+  </form>
+</main>
+
+<script>
+  const API_URL = "http://127.0.0.1:8000/api/admissions/inquiries/";
+  const form = document.getElementById("inquiry-form");
+  const submitBtn = document.getElementById("submit-btn");
+  const messageBox = document.getElementById("form-message");
+
+  function clearMessages() {
+    messageBox.className = "message";
+    messageBox.innerHTML = "";
+    document.querySelectorAll(".field-error").forEach((el) => {
+      el.textContent = "";
+      el.classList.remove("visible");
+    });
+  }
+
+  function showMessage(text, type) {
+    messageBox.textContent = text;
+    messageBox.className = `message visible ${type}`;
+  }
+
+  function showFieldErrors(errors) {
+    Object.entries(errors).forEach(([field, messages]) => {
+      const el = document.querySelector(`[data-error-for="${field}"]`);
+      if (el) {
+        el.textContent = Array.isArray(messages) ? messages.join(" ") : String(messages);
+        el.classList.add("visible");
+      }
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearMessages();
+
+    const formData = new FormData(form);
+    const payload = {
+      guardian_full_name: formData.get("guardian_full_name").trim(),
+      guardian_email: formData.get("guardian_email").trim(),
+      guardian_phone: formData.get("guardian_phone").trim(),
+      guardian_relationship: formData.get("guardian_relationship"),
+      student_full_name: formData.get("student_full_name").trim(),
+      academic_year: formData.get("academic_year").trim(),
+      year_group_applied_for: formData.get("year_group_applied_for").trim(),
+    };
+
+    const dob = formData.get("student_date_of_birth");
+    if (dob) {
+      payload.student_date_of_birth = dob;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitting…";
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        showMessage(
+          `Thank you! Your inquiry for ${data.student_full_name} (${data.year_group_applied_for}, ${data.academic_year}) has been received.`,
+          "success"
+        );
+        form.reset();
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 400 && typeof errorData === "object") {
+          showFieldErrors(errorData);
+          showMessage("Please correct the highlighted fields and try again.", "error");
+        } else if (response.status === 429) {
+          showMessage("Too many submissions. Please try again later.", "error");
+        } else {
+          showMessage("Something went wrong submitting your inquiry. Please try again.", "error");
+        }
+      }
+    } catch (err) {
+      showMessage("Could not reach the server. Please check your connection and try again.", "error");
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Submit inquiry";
+    }
+  });
+</script>
+</body>
+</html>
