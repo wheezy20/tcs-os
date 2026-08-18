@@ -71,10 +71,18 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 
 **Note:** `Student.student_id` assignment on `stage="enrolled"` already exists and is tested (Phase 2.5) — Phase 3 doesn't need to rebuild that part, only add real gating in front of it. Right now the admin's bulk "Move to Enrolled" action lets staff jump any `Application` straight to `stage="enrolled"` in one click, no Decision or Offer required — this contradicts `01-vision.md`'s "Enrolment cannot occur without required acceptance conditions met." Flagged, not yet fixed — worth resolving as part of this phase's Decision/Offer work rather than as a separate stopgap.
 
-## Phase 4 — CRM & marketing layer
+## Phase 4 — Branding & emailed collateral
+
+**Not a newly-invented requirement.** The original Phase 1 kickoff said "no TCS branding yet (Phase 2)," implying branding was expected to land in Phase 2 — but Phase 2, as it actually got built, never touched it, and no later phase picked it up either. Surfaced during a documentation audit; this is that planning gap being closed, not new scope.
+
+- TCS branding applied to the admin dashboard: logo, school colors, real `SITE_TITLE`/`SITE_HEADER` in the `django-unfold` config (currently generic — `"TCS OS Admin"` / `"TCS OS"`, no logo, no color customisation)
+- TCS branding applied to the public forms (`frontend/index.html`, `frontend/application.html`) — currently deliberately neutral gray/blue with no logo, by explicit Phase 1/2 scope decision
+- Attachment support added to `admissions/emails.py` — currently plain text only via `send_mail()`, no attachment capability exists at all. Needed so confirmation emails can carry collateral like a prospectus or brochure PDF
+
+## Phase 5 — CRM & marketing layer
 - Enquiries before application (lead capture even without a full application)
 - Lead source tracking
 - Newsletter/bulk communication tooling (ties into the branded email TCS already wants for the Preschool–JHS admissions announcement)
 
-## Phase 5+ — Everything else in 01-vision.md
+## Phase 6+ — Everything else in 01-vision.md
 Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics, multi-campus. Revisit `01-vision.md` when you get here, don't pre-build models for these now.
