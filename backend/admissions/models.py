@@ -403,12 +403,12 @@ class Offer(models.Model):
 
 
 class Capacity(models.Model):
-    """Seats available per (academic_year, year_group). Storage only for now —
-    the plan was a soft warning (not a hard block, since real admissions has
-    legitimate reasons to go over on paper: sibling priority, board exceptions)
-    when staff accept past capacity, but that check was never actually wired
-    into the Decision/Offer flow. Nothing reads this model yet. See
-    docs/admissions/03-build-order.md's Phase 3 entry."""
+    """Seats available per (academic_year, year_group). ApplicationAdmin
+    shows a soft warning (never a hard block — real admissions has
+    legitimate reasons to go over on paper: sibling priority, board
+    exceptions) when saving a Decision as "accepted" would put the accepted
+    count for that (year, grade) over this capacity. See
+    ApplicationAdmin._warn_if_over_capacity in admin.py."""
 
     academic_year = models.CharField(max_length=50)
     year_group = models.CharField(max_length=50)

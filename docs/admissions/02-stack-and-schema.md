@@ -23,8 +23,8 @@ Family (referral_source, comments)
            ├── Document          (type, file_path in Supabase Storage, status: required/pending_review/approved/rejected)
            └── Notes (internal, staff-only)
 
-Capacity (academic_year, year_group, capacity) — seats per grade per year,
-storage only, see Phase 3 below.
+Capacity (academic_year, year_group, capacity) — seats per grade per year;
+backs a soft over-capacity warning in admin, see Phase 3 below.
 
 ReferenceCounter (key, next_value) — not part of the family tree; backs the
 sequential portion of inquiry_reference/application_reference/student_id.
@@ -197,8 +197,13 @@ logic per stage — see `Application.save()`, `_has_accepted_decision()`,
 Waitlist promotion is therefore a manual two-step staff action: change
 `Decision.decision_type` from `waitlisted` to `accepted`, then Generate
 Offer — no automated promotion exists, deliberately, so a human always
-decides who fills an opening. **Not explicitly tested** — the code path
-looks correct by inspection but wasn't exercised in the Phase 3 test pass.
+decides who fills an opening. Tested end to end (a follow-up session, after
+the initial Phase 3 pass had only checked this "by inspection"): a
+`waitlisted` Decision changed to `accepted` correctly leaves `stage` at
+`waitlisted` (accepted doesn't auto-advance), Generate Offer then succeeds
+from that stage precisely because the gate checks `decision_type`, not
+current `stage`, and the rest of the chain (parent accepts, Mark Enrolled)
+proceeds exactly as it would from any other route into `offer`.
 
 ### `Offer` — token, expiry, and why expiry is lazy
 
@@ -243,14 +248,24 @@ recognized if submitted directly), not just a hidden dropdown option.
 Assigning the permission to real staff is a one-time manual admin task
 (create a Group, check the box, add users) — no UI was built for it.
 
-### `Capacity` — storage only, not enforced
+### `Capacity` — soft warning, not a hard block
 
-The plan was a soft warning (not a hard block) when staff accept past
-capacity for a (academic_year, year_group). **That check was never actually
-built** — `Capacity` exists as a model and is registered in admin, but
-nothing in the Decision/Offer flow reads it. Caught during a
-documentation-accuracy pass, not before shipping — the model's own
-docstring briefly claimed the warning existed when it didn't.
+`ApplicationAdmin._warn_if_over_capacity()`, called from `save_formset()`
+right after a `Decision` is saved: if `decision_type == "accepted"` and a
+`Capacity` row exists for that application's `(academic_year,
+year_group_applied_for)`, it counts all `accepted` Decisions for that same
+(year, grade) and shows a `messages.WARNING` naming the count and the
+capacity if the count exceeds it. Never blocks the save — real admissions
+has legitimate reasons to go over on paper (sibling priority, board
+exceptions). Silent if no `Capacity` row is defined for that (year, grade)
+at all — there's nothing to compare against — and silent for
+`waitlisted`/`rejected` decisions, which don't consume a seat.
+
+This was initially scoped in the Phase 3 plan but shipped as a follow-up:
+the first Phase 3 pass only built the `Capacity` model as storage (its
+docstring briefly, incorrectly, claimed the warning already existed —
+caught and corrected during a documentation-accuracy pass before this was
+actually built).
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 

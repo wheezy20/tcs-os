@@ -69,14 +69,12 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 - `Offer` model — token-based, emailed to the parent (`frontend/offer.html`, `POST /api/admissions/offers/<token>/respond/`), 14-day expiry resolved lazily on read (no scheduler exists in this project yet)
 - Real gating: `Application.save()` blocks entering `offer` (needs an accepted Decision) and `enrolled` (needs an accepted Decision *and* an accepted Offer) via one shared mechanism — this fully closes the gap the Phase 2.5 stopgap only partially closed, and it's enforced in the model, not just in an admin action, so it holds regardless of entry point
 - New `Application.STAGE_CHOICES`: `waitlisted`, `rejected`, `offer_declined` — negative Decision/Offer outcomes propagate onto `Application.stage` automatically (a declined or expired Offer, or a waitlisted/rejected Decision, updates the stage without a separate staff step); positive outcomes never auto-advance, they only unlock the next gate for a deliberate staff action
-- `Capacity` model (seats per academic_year/year_group) — **storage only**, see below
+- `Capacity` model (seats per academic_year/year_group) — `ApplicationAdmin` shows a soft `messages.WARNING` when saving a Decision as "accepted" would put the accepted count for that (year, grade) over capacity; never blocks the save. Built as a follow-up (see below), not in the original Phase 3 pass
 - Waitlist promotion is a manual staff action (change `Decision.decision_type` from `waitlisted` to `accepted`, then Generate Offer) — no automated promotion, deliberately, so a human always makes the call on who gets an opening
 
-**Not built, despite being in the original plan below:** the "soft warning if staff accept past capacity" check. `Capacity` exists purely as storage — nothing in the Decision/Offer flow reads it or warns on it yet. This was caught during a documentation-accuracy pass after the fact, not before — the model's docstring briefly claimed the warning existed when it didn't. Needs either building for real or explicitly re-scoping into a later phase.
-
-**Also not tested, though the code path looks correct:** waitlist promotion specifically (waitlisted → accepted → Generate Offer). The Phase 3 test suite covered Decision→waitlisted propagation and the full accept/decline/expire chains, but not this specific reversal.
-
 **A real bug found and fixed during testing:** `Decision.save()`/`Offer.save()`'s stage-propagation logic originally trusted `self.application.stage`, but that can be a stale, already-mutated-in-memory value when the save is triggered from inside `Application.save()`'s own gate check (exactly what happens when an admin bulk action sets `.stage` before calling `.save()`). Fixed by always re-fetching the `Application` row fresh rather than trusting a possibly-cached instance — full detail in `02-stack-and-schema.md`.
+
+**Follow-up within the same phase** (a later session): the capacity soft-warning was actually built (it had only been storage before, despite an initially-misleading docstring caught during a documentation-accuracy pass), and waitlist promotion was tested end to end for the first time — Decision→waitlisted, changed to accepted, Generate Offer succeeds from the `waitlisted` stage, and the rest of the chain (parent accepts, Mark Enrolled) proceeds normally. Both previously-open items from this phase are now closed.
 
 ## Phase 4 — Branding & emailed collateral
 

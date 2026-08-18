@@ -138,7 +138,39 @@ class ApplicationAdmin(ModelAdmin):
             if isinstance(instance, Decision):
                 instance.decided_by = request.user
             instance.save()
+            if isinstance(instance, Decision):
+                self._warn_if_over_capacity(request, instance)
         formset.save_m2m()
+
+    def _warn_if_over_capacity(self, request, decision):
+        """Soft warning only — never blocks the save. Real admissions has
+        legitimate reasons to go over capacity on paper (sibling priority,
+        board exceptions), so this is informational, not a gate."""
+        if decision.decision_type != "accepted":
+            return
+
+        application = decision.application
+        capacity = Capacity.objects.filter(
+            academic_year=application.academic_year,
+            year_group=application.year_group_applied_for,
+        ).first()
+        if not capacity:
+            return  # no capacity defined for this (year, grade) — nothing to compare against
+
+        accepted_count = Decision.objects.filter(
+            decision_type="accepted",
+            application__academic_year=application.academic_year,
+            application__year_group_applied_for=application.year_group_applied_for,
+        ).count()
+
+        if accepted_count > capacity.capacity:
+            self.message_user(
+                request,
+                f"Capacity warning: {application.year_group_applied_for} "
+                f"({application.academic_year}) now has {accepted_count} accepted "
+                f"decision(s) against a capacity of {capacity.capacity}.",
+                level=messages.WARNING,
+            )
 
     def _bulk_set_stage(self, request, queryset, stage, label):
         """queryset.update() would be a raw bulk SQL UPDATE that bypasses

@@ -86,3 +86,12 @@ Append-only. Add a new dated entry after every work session: what was built, dec
 - Not built despite being in the original Phase 3 plan: the soft capacity-warning check — `Capacity` is storage only, nothing reads it yet (caught during the next session's documentation audit, not before)
 - Not tested: waitlist promotion specifically (waitlisted → accepted → Generate Offer) — the code path looks correct by inspection but wasn't exercised
 - Commit: `a11115f` "Phase 3: Decisions, offers, waitlist/capacity tracking, and gated enrollment."
+
+## 2026-08-18 — Phase 3 follow-up: capacity warning + waitlist promotion test coverage
+- Closes both items left open at the end of the Phase 3 entry above
+- Built `ApplicationAdmin._warn_if_over_capacity()`, called from `save_formset()` right after a `Decision` saves: if `decision_type == "accepted"` and a `Capacity` row exists for that application's (academic_year, year_group), counts all `accepted` Decisions for that (year, grade) and shows a `messages.WARNING` if the count exceeds capacity — never blocks the save. Silent when no `Capacity` row is defined, and silent for `waitlisted`/`rejected` decisions
+- Fixed `Capacity`'s docstring back to accurately describing this as built (it briefly, incorrectly, described the same behavior as already existing during the gap between scoping and building)
+- Tested: exactly-at-capacity correctly doesn't warn (only *exceeding* it warns), over-capacity warns with the correct counts in the message text (verified against the actual rendered admin HTML, not just the return value), waitlisted decisions never trigger it, and an (academic_year, year_group) with no `Capacity` row defined never triggers it either
+- Tested waitlist promotion end to end for the first time, not just "by inspection": a `waitlisted` Decision changed to `accepted` correctly leaves `Application.stage` at `waitlisted` (accepted doesn't auto-advance) → Generate Offer succeeds from the `waitlisted` stage specifically because the gate checks `decision_type`, not current `stage` → parent accepts via the token endpoint → Mark Enrolled succeeds, `student_id` assigned. Full chain, no shortcuts
+- Re-ran the entire original Phase 3 test suite (both chains, the permission check, both bonus checks) after the `save_formset` change to confirm no regression — all passed
+- Commit: "Phase 3 follow-up: capacity warning + waitlist promotion test coverage"
