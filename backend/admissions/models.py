@@ -403,10 +403,12 @@ class Offer(models.Model):
 
 
 class Capacity(models.Model):
-    """Seats available per (academic_year, year_group). Informational only —
-    Phase 3 shows a soft warning if staff accept past capacity rather than
-    blocking the decision; real admissions has legitimate reasons to go over
-    on paper (sibling priority, board exceptions)."""
+    """Seats available per (academic_year, year_group). Storage only for now —
+    the plan was a soft warning (not a hard block, since real admissions has
+    legitimate reasons to go over on paper: sibling priority, board exceptions)
+    when staff accept past capacity, but that check was never actually wired
+    into the Decision/Offer flow. Nothing reads this model yet. See
+    docs/admissions/03-build-order.md's Phase 3 entry."""
 
     academic_year = models.CharField(max_length=50)
     year_group = models.CharField(max_length=50)

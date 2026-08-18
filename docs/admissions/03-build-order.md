@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: Phase 3 — not started**
+**Current phase: Phase 4 — not started**
 
 ---
 
@@ -62,14 +62,21 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 
 ---
 
-## Phase 3 — Decisions, offers, enrolment
+## Phase 3 — Decisions, offers, enrolment — DONE (2026-08-18)
 
-- Decision model (Accepted/Waitlisted/Rejected) with authorised-role restriction
-- Waitlist + basic capacity tracking per year group
-- Offer generation + parent acceptance step
-- Enrolment confirmation → Student record activation
+**What shipped:**
+- `Decision` model (accepted/waitlisted/rejected), mutable one-per-Application, gated behind a new `admissions.can_decide` permission — a plain Django Group/Permission, not a new role/profile system (see `02-stack-and-schema.md`)
+- `Offer` model — token-based, emailed to the parent (`frontend/offer.html`, `POST /api/admissions/offers/<token>/respond/`), 14-day expiry resolved lazily on read (no scheduler exists in this project yet)
+- Real gating: `Application.save()` blocks entering `offer` (needs an accepted Decision) and `enrolled` (needs an accepted Decision *and* an accepted Offer) via one shared mechanism — this fully closes the gap the Phase 2.5 stopgap only partially closed, and it's enforced in the model, not just in an admin action, so it holds regardless of entry point
+- New `Application.STAGE_CHOICES`: `waitlisted`, `rejected`, `offer_declined` — negative Decision/Offer outcomes propagate onto `Application.stage` automatically (a declined or expired Offer, or a waitlisted/rejected Decision, updates the stage without a separate staff step); positive outcomes never auto-advance, they only unlock the next gate for a deliberate staff action
+- `Capacity` model (seats per academic_year/year_group) — **storage only**, see below
+- Waitlist promotion is a manual staff action (change `Decision.decision_type` from `waitlisted` to `accepted`, then Generate Offer) — no automated promotion, deliberately, so a human always makes the call on who gets an opening
 
-**Note:** `Student.student_id` assignment on `stage="enrolled"` already exists and is tested (Phase 2.5) — Phase 3 doesn't need to rebuild that part, only add real gating in front of it. Right now the admin's bulk "Move to Enrolled" action lets staff jump any `Application` straight to `stage="enrolled"` in one click, no Decision or Offer required — this contradicts `01-vision.md`'s "Enrolment cannot occur without required acceptance conditions met." Flagged, not yet fixed — worth resolving as part of this phase's Decision/Offer work rather than as a separate stopgap.
+**Not built, despite being in the original plan below:** the "soft warning if staff accept past capacity" check. `Capacity` exists purely as storage — nothing in the Decision/Offer flow reads it or warns on it yet. This was caught during a documentation-accuracy pass after the fact, not before — the model's docstring briefly claimed the warning existed when it didn't. Needs either building for real or explicitly re-scoping into a later phase.
+
+**Also not tested, though the code path looks correct:** waitlist promotion specifically (waitlisted → accepted → Generate Offer). The Phase 3 test suite covered Decision→waitlisted propagation and the full accept/decline/expire chains, but not this specific reversal.
+
+**A real bug found and fixed during testing:** `Decision.save()`/`Offer.save()`'s stage-propagation logic originally trusted `self.application.stage`, but that can be a stale, already-mutated-in-memory value when the save is triggered from inside `Application.save()`'s own gate check (exactly what happens when an admin bulk action sets `.stage` before calling `.save()`). Fixed by always re-fetching the `Application` row fresh rather than trusting a possibly-cached instance — full detail in `02-stack-and-schema.md`.
 
 ## Phase 4 — Branding & emailed collateral
 

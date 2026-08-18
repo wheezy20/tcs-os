@@ -16,9 +16,15 @@ Family (referral_source, comments)
  └── Student ×1-5 (name, DOB, current school, current grade, student_id)
       └── Application  (one per student — academic_year, grade applied for,
                          month of enrollment, inquiry_reference, application_reference)
-           ├── ApplicationStage  (Inquiry → Application → Document Review → Offer → Enrolled)
+           ├── ApplicationStage  (Inquiry → Application → Document Review → Offer → Enrolled,
+           │                      or a terminal Waitlisted / Rejected / Offer Declined)
+           ├── Decision          (accepted/waitlisted/rejected, decided_by, decided_at, notes)
+           ├── Offer             (token, response: pending/accepted/declined/expired, expires_at)
            ├── Document          (type, file_path in Supabase Storage, status: required/pending_review/approved/rejected)
            └── Notes (internal, staff-only)
+
+Capacity (academic_year, year_group, capacity) — seats per grade per year,
+storage only, see Phase 3 below.
 
 ReferenceCounter (key, next_value) — not part of the family tree; backs the
 sequential portion of inquiry_reference/application_reference/student_id.
@@ -35,6 +41,7 @@ Django models (rough, refine when building):
 - `Document` (FK to Application; type; file_path — a Supabase Storage object path, not a URL; status)
 - `Note` (FK to Application; staff-only)
 - `ReferenceCounter` — not part of the Family/Student/Application tree; a small counter table that backs the three reference-number sequences above (see Phase 2.5)
+- `Decision`, `Offer`, `Capacity` — see Phase 3 below
 
 **Explicitly deferred** to later phases (see `03-build-order.md`): assessments, interviews, review rubrics, waitlist/capacity logic, offers/payments, re-enrolment, campaigns/lead scoring, workflow engine, AI analytics, alumni.
 
@@ -49,6 +56,13 @@ POST   /api/admissions/inquiries/     (public — creates Family + Student(s) + 
 ```
 POST   /api/admissions/applications/  (public, no prior Inquiry required — see matching rules below)
 POST   /api/admissions/upload-url/    (public — mints a signed Supabase Storage upload URL for one document)
+```
+
+## Phase 3 API surface
+
+```
+POST   /api/admissions/offers/<token>/respond/  (public — the offer's own token is the entire access
+                                                  control, same trust model as the two endpoints above)
 ```
 
 Everything else (staff review, stage changes, document approval) happens through Django admin, no separate staff-facing endpoint or UI needed yet.
@@ -145,6 +159,98 @@ immediately before the app goes live, so reference numbers and Student IDs
 start clean at `0001` for real families. Always prompts for confirmation
 (type `yes`); there is no flag to skip the prompt. Built but intentionally
 never run — see `admissions/management/commands/reset_admissions_data.py`.
+
+## Phase 3 — decisions, offers, gated enrollment
+
+### Gate mechanism, shared between two stages
+
+`Application.GATED_STAGES = {"offer", "enrolled"}`. Entering either requires
+a prior step, checked in `Application.save()` itself (not `.clean()`, not an
+admin-only check) so it's enforced regardless of entry point — the public
+serializers, a manual admin edit, or the bulk stage-transition actions:
+
+- **`offer`** requires an accepted `Decision`.
+- **`enrolled`** requires an accepted `Decision` *and* an accepted `Offer`
+  (an `Offer.refresh_expiry()` call happens as part of this check, so a
+  quietly-expired offer resolves to `expired` — and blocks — right here,
+  not just when something else happens to notice).
+
+Both share one mechanism (`_requirement_met_for_stage`), not duplicated gate
+logic per stage — see `Application.save()`, `_has_accepted_decision()`,
+`_has_accepted_offer()`.
+
+### Negative outcomes propagate automatically; positive outcomes don't
+
+`Application.STAGE_CHOICES` gained three terminal values: `waitlisted`,
+`rejected`, `offer_declined`. The rule, applied consistently in both
+`Decision.save()` and `Offer.save()`:
+
+- A **negative/terminal** outcome (`Decision.decision_type` becoming
+  `waitlisted`/`rejected`; `Offer.response` becoming `declined`/`expired`)
+  pushes `Application.stage` to match, automatically — no separate staff
+  step, since these outcomes are unambiguous and final.
+- A **positive** outcome (`decision_type="accepted"`; `response="accepted"`)
+  never auto-advances the stage — it only unlocks the next gate for a
+  deliberate staff action (Generate Offer; Mark Enrolled). Accepting an
+  Offer doesn't enrol anyone by itself.
+
+Waitlist promotion is therefore a manual two-step staff action: change
+`Decision.decision_type` from `waitlisted` to `accepted`, then Generate
+Offer — no automated promotion exists, deliberately, so a human always
+decides who fills an opening. **Not explicitly tested** — the code path
+looks correct by inspection but wasn't exercised in the Phase 3 test pass.
+
+### `Offer` — token, expiry, and why expiry is lazy
+
+Same public-token trust model as the rest of the public surface (no parent
+portal exists). `expires_at` is set when an offer is generated
+(`OFFER_EXPIRY_DAYS`, default 14, env-configurable). There's no scheduler in
+this project (no Celery, no cron, nothing deployed at all yet), so expiry
+can't be a timed job — `Offer.refresh_expiry()` resolves `pending → expired`
+lazily, called wherever the response is about to matter (the enrolled-stage
+gate, the public respond endpoint, admin display). Mutable/reusable
+(`OneToOneField`): re-offering after a decline or expiry means resetting the
+same row (admin's "Reset Offer" action), not creating a second `Offer`.
+
+### A real bug found during testing — stale cached instances
+
+`Decision.save()`/`Offer.save()`'s propagation logic originally checked
+`self.application.stage` directly. That broke when the save was triggered
+*from inside* `Application.save()`'s own gate check — e.g. the admin's
+`_bulk_set_stage` sets `application.stage = "enrolled"` **before** calling
+`.save()`, so by the time the nested `Offer.save()` (via
+`refresh_expiry()`) ran its propagation check, `self.application` was the
+*same* Python instance the caller had already mutated in memory — reading
+`"enrolled"`, not the true prior `"offer"`, and silently skipping the
+propagation. Fixed by always fetching a fresh `Application` row
+(`Application.objects.get(pk=self.application_id)`) for this check instead
+of trusting a possibly-stale cached instance — the same "never trust
+in-memory state, always re-fetch" pattern already used for
+`previous_stage`/`previous_response`/`previous_type` throughout this file.
+Caught by the offer-expiry test specifically; worth remembering if this
+propagation logic is ever touched again.
+
+### `admissions.can_decide` permission
+
+A plain Django `Meta.permissions` entry on `Decision` — not a new
+role/profile system. Verified before building that literally nothing else
+existed (no Groups, no custom permissions, no Profile model — checked
+directly in code, not assumed). Gates the `DecisionInline`/`OfferInline`
+(`has_add_permission`/`has_change_permission`) and the `generate_offer`/
+`reset_offer` admin actions via `get_actions()`, which Django's own action
+dispatch treats as a functional block (the action name won't even be
+recognized if submitted directly), not just a hidden dropdown option.
+Assigning the permission to real staff is a one-time manual admin task
+(create a Group, check the box, add users) — no UI was built for it.
+
+### `Capacity` — storage only, not enforced
+
+The plan was a soft warning (not a hard block) when staff accept past
+capacity for a (academic_year, year_group). **That check was never actually
+built** — `Capacity` exists as a model and is registered in admin, but
+nothing in the Decision/Offer flow reads it. Caught during a
+documentation-accuracy pass, not before shipping — the model's own
+docstring briefly claimed the warning existed when it didn't.
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
