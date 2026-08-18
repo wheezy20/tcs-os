@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin, TabularInline
 
@@ -98,9 +98,28 @@ class ApplicationAdmin(ModelAdmin):
     def mark_as_offer(self, request, queryset):
         self._bulk_set_stage(request, queryset, "offer", "Offer")
 
-    @admin.action(description="Move selected to: Enrolled")
+    @admin.action(description="Move selected to: Enrolled (only from Offer stage)")
     def mark_as_enrolled(self, request, queryset):
-        self._bulk_set_stage(request, queryset, "enrolled", "Enrolled")
+        """Stopgap until Phase 3's Decision/Offer models exist: without this,
+        any Application could jump straight to 'enrolled' in one click from
+        any stage, with no Decision or Offer required — contradicting
+        01-vision.md's "Enrolment cannot occur without required acceptance
+        conditions met." Restricting the *bulk action* to offer-stage rows
+        only closes the one-click mass-enrollment risk; it doesn't touch the
+        per-record edit form's stage dropdown, which Phase 3 will replace
+        with real gating."""
+        eligible = queryset.filter(stage="offer")
+        skipped = queryset.exclude(stage="offer").count()
+
+        self._bulk_set_stage(request, eligible, "enrolled", "Enrolled")
+
+        if skipped:
+            self.message_user(
+                request,
+                f"{skipped} application(s) skipped — only applications currently at the "
+                "Offer stage can be moved to Enrolled this way.",
+                level=messages.WARNING,
+            )
 
 
 @admin.register(Student)
