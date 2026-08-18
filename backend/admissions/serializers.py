@@ -63,6 +63,7 @@ class InquirySerializer(serializers.Serializer):
             "applications": [
                 {
                     "id": application.pk,
+                    "reference": application.inquiry_reference,
                     "stage": application.stage,
                     "student_full_name": application.student.full_name,
                     "year_group_applied_for": application.year_group_applied_for,
@@ -144,11 +145,13 @@ class ApplicationSerializer(serializers.Serializer):
         """`instance` is the Application returned by create()."""
         return {
             "application_id": instance.pk,
+            "reference": instance.application_reference,
             "family_id": instance.student.family_id,
             "stage": instance.stage,
             "student_full_name": instance.student.full_name,
             "year_group_applied_for": instance.year_group_applied_for,
             "academic_year": instance.academic_year,
+            "student_id": instance.student.student_id,
         }
 
     def create(self, validated_data):

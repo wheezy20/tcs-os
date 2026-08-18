@@ -38,6 +38,10 @@ def send_inquiry_emails(family, applications):
         return
 
     student_names = ", ".join(a.student.full_name for a in applications)
+    reference_lines = "\n".join(
+        f"  - {a.student.full_name}: {a.inquiry_reference or '(reference pending)'}"
+        for a in applications
+    )
 
     _send(
         subject="We've received your enquiry — TCS Admissions",
@@ -45,14 +49,14 @@ def send_inquiry_emails(family, applications):
             f"Dear {guardian.first_name},\n\n"
             f"Thank you for your enquiry regarding {student_names}. Our admissions "
             "team has received your submission and will be in touch soon with next "
-            "steps.\n\n"
+            f"steps.\n\nYour reference number(s):\n{reference_lines}\n\n"
             "— TCS Admissions"
         ),
         recipient=guardian.email,
     )
 
     child_lines = "\n".join(
-        f"  - {a.student.full_name}: {a.year_group_applied_for} "
+        f"  - {a.student.full_name} ({a.inquiry_reference}): {a.year_group_applied_for} "
         f"({a.academic_year}, {a.month_of_enrollment or 'month TBD'})"
         for a in applications
     )
@@ -82,7 +86,7 @@ def send_application_emails(application):
             f"Thank you for submitting a formal application for {student.full_name} "
             f"({application.year_group_applied_for}, {application.academic_year}). "
             "Our admissions team has received your documents and will review your "
-            "application soon.\n\n"
+            f"application soon.\n\nYour reference number: {application.application_reference}\n\n"
             "— TCS Admissions"
         ),
         recipient=guardian.email,
@@ -95,6 +99,7 @@ def send_application_emails(application):
         subject=f"New admissions application — {student.full_name}",
         message=(
             "A new formal application was submitted.\n\n"
+            f"Reference: {application.application_reference}\n"
             f"Student: {student.full_name} — {application.year_group_applied_for} "
             f"({application.academic_year})\n"
             f"Guardian: {guardian.full_name} <{guardian.email}> {guardian.phone}\n\n"

@@ -3,7 +3,7 @@ from django.utils.html import format_html
 from unfold.admin import ModelAdmin, TabularInline
 
 from . import storage
-from .models import Family, Guardian, Student, Application, Document, Note
+from .models import Family, Guardian, Student, Application, Document, Note, ReferenceCounter
 
 
 class GuardianInline(TabularInline):
@@ -52,9 +52,13 @@ class NoteInline(TabularInline):
 @admin.register(Application)
 class ApplicationAdmin(ModelAdmin):
     inlines = [DocumentInline, NoteInline]
-    list_display = ("student", "year_group_applied_for", "academic_year", "month_of_enrollment", "stage", "updated_at")
+    list_display = (
+        "student", "year_group_applied_for", "academic_year", "month_of_enrollment",
+        "stage", "inquiry_reference", "application_reference", "updated_at",
+    )
     list_filter = ("stage", "academic_year", "year_group_applied_for")
-    search_fields = ("student__full_name",)
+    search_fields = ("student__full_name", "inquiry_reference", "application_reference")
+    readonly_fields = ("inquiry_reference", "application_reference")
     actions = ["mark_as_application", "mark_as_document_review", "mark_as_offer", "mark_as_enrolled"]
 
     def save_formset(self, request, form, formset, change):
@@ -70,34 +74,51 @@ class ApplicationAdmin(ModelAdmin):
             instance.save()
         formset.save_m2m()
 
+    def _bulk_set_stage(self, request, queryset, stage, label):
+        """queryset.update() would be a raw bulk SQL UPDATE that bypasses
+        Application.save() entirely — and reference-number/student_id
+        assignment lives in that save() override. Must save() each instance
+        individually so those side effects actually fire."""
+        count = 0
+        for application in queryset:
+            application.stage = stage
+            application.save()
+            count += 1
+        self.message_user(request, f"{count} application(s) moved to {label} stage.")
+
     @admin.action(description="Move selected to: Application")
     def mark_as_application(self, request, queryset):
-        updated = queryset.update(stage="application")
-        self.message_user(request, f"{updated} application(s) moved to Application stage.")
+        self._bulk_set_stage(request, queryset, "application", "Application")
 
     @admin.action(description="Move selected to: Document Review")
     def mark_as_document_review(self, request, queryset):
-        updated = queryset.update(stage="document_review")
-        self.message_user(request, f"{updated} application(s) moved to Document Review stage.")
+        self._bulk_set_stage(request, queryset, "document_review", "Document Review")
 
     @admin.action(description="Move selected to: Offer")
     def mark_as_offer(self, request, queryset):
-        updated = queryset.update(stage="offer")
-        self.message_user(request, f"{updated} application(s) moved to Offer stage.")
+        self._bulk_set_stage(request, queryset, "offer", "Offer")
 
     @admin.action(description="Move selected to: Enrolled")
     def mark_as_enrolled(self, request, queryset):
-        updated = queryset.update(stage="enrolled")
-        self.message_user(request, f"{updated} application(s) moved to Enrolled stage.")
+        self._bulk_set_stage(request, queryset, "enrolled", "Enrolled")
 
 
 @admin.register(Student)
 class StudentAdmin(ModelAdmin):
-    list_display = ("full_name", "family", "date_of_birth", "current_grade", "current_school")
-    search_fields = ("full_name",)
+    list_display = ("full_name", "family", "date_of_birth", "current_grade", "current_school", "student_id")
+    search_fields = ("full_name", "student_id")
+    readonly_fields = ("student_id",)
 
 
 @admin.register(Guardian)
 class GuardianAdmin(ModelAdmin):
     list_display = ("full_name", "family", "relationship", "email", "phone", "town_city")
     search_fields = ("first_name", "surname", "email")
+
+
+@admin.register(ReferenceCounter)
+class ReferenceCounterAdmin(ModelAdmin):
+    """Visibility/debugging only — these rows are maintained entirely by
+    ReferenceCounter.next_for(), never hand-edited in normal operation."""
+    list_display = ("key", "next_value")
+    search_fields = ("key",)

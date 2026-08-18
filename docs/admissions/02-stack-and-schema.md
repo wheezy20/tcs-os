@@ -87,6 +87,48 @@ per child — a 2-sibling Inquiry still sends exactly 2 emails). Plain text,
 `admissions/emails.py`, sent via `EMAIL_BACKEND` (console in dev). Failures are
 logged and swallowed, never block the actual Inquiry/Application from saving.
 
+## Phase 2.5 — reference ID numbering
+
+**Provisional pending confirmation with TCS admissions/admin staff** on whether
+a legacy paper-records numbering convention already exists (see `03-build-order.md`).
+Student ID's format below was specified directly rather than proposed, so it's
+on firmer ground than the Inquiry/Application format, but neither has been
+checked against real legacy records yet.
+
+| ID | Format | Example | Assigned when |
+|---|---|---|---|
+| Inquiry reference | `INQ-YYYY-NNNN` (YYYY = submission year) | `INQ-2026-0042` | `Application` created at `stage="inquiry"` |
+| Application reference | `APP-YYYY-NNNN` (YYYY = submission year) | `APP-2026-0042` | `Application.stage` first reaches `"application"` or later (direct entry or advanced from Inquiry) |
+| Student ID | `YYPPNNNN` (YY=year, PP=classification, NNNN=roll number) | `26010002` | `Application.stage` first reaches `"enrolled"` — once per `Student`, never reassigned |
+
+Classification codes (`PP`), keyed by the grade enrolled *at* (`year_group_applied_for`
+on the enrolling Application, not `current_grade`): `01` Preschool (Pre Nursery–Nursery 2),
+`02` KG, `03` Primary (Grade 1-6), `04` JHS (Grade 7-9). **No `05` code for
+SHS (Grade 10-12)** — TCS doesn't offer it yet. See the `TODO(SHS)` in
+`admissions/models.py::STUDENT_ID_CLASSIFICATION`: a student enrolled at
+Grade 10-12 gets no `student_id` assigned (not a guessed code) and a logged
+warning, surfacing as a visibly-missing field in admin rather than a silently
+wrong one.
+
+All three sequences reset per year (Student ID additionally per classification
+within that year), backed by `ReferenceCounter` — a small counter table
+incremented under `select_for_update()` so concurrent submissions can't be
+handed the same number. Assignment logic lives in `Application.save()`, so it
+fires the same way regardless of entry point: the public serializers, a
+manual admin edit, or the bulk stage-transition actions in `ApplicationAdmin`
+(which specifically iterate + `.save()` rather than `queryset.update()`, since
+the latter bypasses `save()` entirely and would silently skip assignment).
+
+Interaction with Phase 2 dedup matching: since these fields live on the same
+`Application`/`Student` rows that matching already finds-and-reuses, a
+returning family's re-application automatically keeps its existing reference
+numbers and Student ID — assignment only ever fires once, guarded by "still
+null," so there's no special-casing needed for the matched-row case.
+
+Existing Phase 1/2 test data (~12 `Application`/`Student` rows) was
+deliberately left with `NULL` reference numbers rather than backfilled — the
+migration is schema-only, no business logic mixed in.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.
