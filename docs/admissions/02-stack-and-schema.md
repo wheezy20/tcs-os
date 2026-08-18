@@ -12,12 +12,16 @@
 
 ```
 Family (referral_source, comments)
- ├── Parent/Guardian ×1-2 (name, email, phone, relationship, religion, address, town/city)
- └── Student ×1-5 (name, DOB, current school, current grade)
-      └── Application  (one per student — academic_year, grade applied for, month of enrollment)
+ ├── Parent/Guardian ×1-2 (first_name, surname, email, phone, relationship, religion, address, town/city)
+ └── Student ×1-5 (name, DOB, current school, current grade, student_id)
+      └── Application  (one per student — academic_year, grade applied for,
+                         month of enrollment, inquiry_reference, application_reference)
            ├── ApplicationStage  (Inquiry → Application → Document Review → Offer → Enrolled)
            ├── Document          (type, file_path in Supabase Storage, status: required/pending_review/approved/rejected)
            └── Notes (internal, staff-only)
+
+ReferenceCounter (key, next_value) — not part of the family tree; backs the
+sequential portion of inquiry_reference/application_reference/student_id.
 ```
 
 A single inquiry submission can cover multiple children (siblings) and up to two guardians in one call — see `InquirySerializer` in `admissions/serializers.py` for the exact nested shape.
@@ -25,11 +29,12 @@ A single inquiry submission can cover multiple children (siblings) and up to two
 Django models (rough, refine when building):
 
 - `Family`
-- `Guardian` (FK to Family)
-- `Student` (FK to Family)
-- `Application` (FK to Student; stage field; academic_year; year_group applied for)
+- `Guardian` (FK to Family) — name is stored as `first_name`/`surname`, not a single `full_name` field (that was the original Phase 1 shape; split via migration once the real TCS form asked for them separately — `full_name` survives only as a read-only property that joins the two)
+- `Student` (FK to Family) — `student_id` is the permanent ID, assigned once at enrolment (see Phase 2.5 below), not at creation
+- `Application` (FK to Student; stage field; academic_year; year_group applied for; `inquiry_reference`/`application_reference`, see Phase 2.5)
 - `Document` (FK to Application; type; file_path — a Supabase Storage object path, not a URL; status)
 - `Note` (FK to Application; staff-only)
+- `ReferenceCounter` — not part of the Family/Student/Application tree; a small counter table that backs the three reference-number sequences above (see Phase 2.5)
 
 **Explicitly deferred** to later phases (see `03-build-order.md`): assessments, interviews, review rubrics, waitlist/capacity logic, offers/payments, re-enrolment, campaigns/lead scoring, workflow engine, AI analytics, alumni.
 
@@ -128,6 +133,18 @@ null," so there's no special-casing needed for the matched-row case.
 Existing Phase 1/2 test data (~12 `Application`/`Student` rows) was
 deliberately left with `NULL` reference numbers rather than backfilled — the
 migration is schema-only, no business logic mixed in.
+
+### Resetting test data before go-live
+
+`python manage.py reset_admissions_data` — truncates every admissions table
+(`Family`, `Guardian`, `Student`, `Application`, `Document`, `Note`,
+`ReferenceCounter`) and resets their ID sequences back to 1, via a single
+`TRUNCATE ... RESTART IDENTITY CASCADE`. Destructive and irreversible by
+design — it exists specifically to wipe accumulated Phase 1/2/2.5 test data
+immediately before the app goes live, so reference numbers and Student IDs
+start clean at `0001` for real families. Always prompts for confirmation
+(type `yes`); there is no flag to skip the prompt. Built but intentionally
+never run — see `admissions/management/commands/reset_admissions_data.py`.
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
