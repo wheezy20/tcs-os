@@ -1,5 +1,7 @@
 import logging
+import secrets
 
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -69,6 +71,10 @@ def _next_application_reference():
     year = timezone.now().year
     seq = ReferenceCounter.next_for(f"APP-{year}")
     return f"APP-{year}-{seq:04d}"
+
+
+def _generate_offer_token():
+    return secrets.token_urlsafe(32)
 
 
 def _assign_student_id_if_needed(application):
@@ -177,7 +183,25 @@ class Application(models.Model):
         ("document_review", "Document Review"),
         ("offer", "Offer"),
         ("enrolled", "Enrolled"),
+        ("waitlisted", "Waitlisted"),
+        ("rejected", "Rejected"),
+        ("offer_declined", "Offer Declined"),
     ]
+
+    # Stages that require a prior step to have been completed before they can be
+    # entered — see _requirement_met_for_stage(). Not a general workflow engine,
+    # just the two forward transitions Phase 3 needs to actually gate.
+    GATED_STAGES = {"offer", "enrolled"}
+
+    # Any stage that means "this genuinely became a formal application" — including
+    # the terminal outcomes, since reaching waitlisted/rejected/offer_declined implies
+    # 'application' was passed through at some point. Explicit set rather than an
+    # ordinal STAGE_CHOICES-position comparison, since the stage list branches into
+    # terminal outcomes now rather than being one strictly linear sequence.
+    STAGES_REQUIRING_APPLICATION_REFERENCE = {
+        "application", "document_review", "offer", "enrolled",
+        "waitlisted", "rejected", "offer_declined",
+    }
 
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="applications")
     stage = models.CharField(max_length=20, choices=STAGE_CHOICES, default="inquiry")
@@ -201,24 +225,199 @@ class Application(models.Model):
     def __str__(self):
         return f"{self.student.full_name} — {self.year_group_applied_for} ({self.get_stage_display()})"
 
+    def _has_accepted_decision(self):
+        if not self.pk:
+            return False  # a not-yet-saved row can't possibly have a Decision pointing at it
+        decision = getattr(self, "decision", None)
+        return bool(decision and decision.decision_type == "accepted")
+
+    def _has_accepted_offer(self):
+        if not self.pk:
+            return False
+        offer = getattr(self, "offer", None)
+        if not offer:
+            return False
+        offer.refresh_expiry()  # settle pending -> expired here, before deciding
+        return offer.response == "accepted"
+
+    def _requirement_met_for_stage(self, stage):
+        if stage == "offer":
+            return self._has_accepted_decision()
+        if stage == "enrolled":
+            return self._has_accepted_decision() and self._has_accepted_offer()
+        return True
+
+    def _gate_requirement_description(self, stage):
+        if stage == "offer":
+            return "requires an accepted Decision first."
+        if stage == "enrolled":
+            return "requires an accepted Decision and an accepted Offer response."
+        return ""
+
     def save(self, *args, **kwargs):
-        stage_order = [choice[0] for choice in self.STAGE_CHOICES]
         is_new = self.pk is None
+        previous_stage = None if is_new else (
+            Application.objects.filter(pk=self.pk).values_list("stage", flat=True).first()
+        )
+        entering_gated_stage = self.stage in self.GATED_STAGES and self.stage != previous_stage
+
+        if entering_gated_stage and not self._requirement_met_for_stage(self.stage):
+            raise ValidationError(
+                f"Cannot move to '{self.get_stage_display()}': "
+                f"{self._gate_requirement_description(self.stage)}"
+            )
 
         with transaction.atomic():
             if is_new and self.stage == "inquiry" and not self.inquiry_reference:
                 self.inquiry_reference = _next_inquiry_reference()
 
-            if (
-                stage_order.index(self.stage) >= stage_order.index("application")
-                and not self.application_reference
-            ):
+            if self.stage in self.STAGES_REQUIRING_APPLICATION_REFERENCE and not self.application_reference:
                 self.application_reference = _next_application_reference()
 
             super().save(*args, **kwargs)
 
             if self.stage == "enrolled":
                 _assign_student_id_if_needed(self)
+
+
+class Decision(models.Model):
+    """Records whether an Application was accepted, waitlisted, or rejected.
+    One mutable row per Application (not an append-only log) — matches how
+    Application.stage itself is a single mutable field, not a history of
+    snapshots. Recording a Decision is gated behind the admissions.can_decide
+    permission — a plain Django Group/Permission, not a new role/profile
+    system. See docs/admissions/02-stack-and-schema.md."""
+
+    DECISION_CHOICES = [
+        ("accepted", "Accepted"),
+        ("waitlisted", "Waitlisted"),
+        ("rejected", "Rejected"),
+    ]
+
+    application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name="decision")
+    decision_type = models.CharField(max_length=20, choices=DECISION_CHOICES)
+    decided_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True)
+    decided_at = models.DateTimeField(auto_now=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        permissions = [("can_decide", "Can make admissions decisions")]
+
+    def __str__(self):
+        return f"{self.get_decision_type_display()} — {self.application}"
+
+    def save(self, *args, **kwargs):
+        """Negative/terminal outcomes (waitlisted, rejected) propagate onto
+        Application.stage automatically, since they're unambiguous and need
+        no further action. 'accepted' does NOT auto-advance the stage — it
+        only unlocks the offer-stage gate for a deliberate next staff action
+        (generating an Offer). See Application._requirement_met_for_stage."""
+        is_new = self.pk is None
+        previous_type = None if is_new else (
+            Decision.objects.filter(pk=self.pk).values_list("decision_type", flat=True).first()
+        )
+        super().save(*args, **kwargs)
+
+        newly_negative = (
+            self.decision_type in ("waitlisted", "rejected") and self.decision_type != previous_type
+        )
+        if newly_negative:
+            # Fetch fresh rather than using self.application: a caller further
+            # up the stack (e.g. Application.save()'s own gate check, which
+            # runs BEFORE this save() when it's what triggered it — see
+            # Offer.save() below for exactly this scenario) may hold an
+            # in-memory Application instance whose .stage was already mutated
+            # to a not-yet-persisted value. Trusting that cached instance's
+            # .stage here would check against a value that was never true in
+            # the database.
+            application = Application.objects.get(pk=self.application_id)
+            if application.stage != "enrolled":
+                application.stage = self.decision_type
+                application.save()
+
+
+class Offer(models.Model):
+    """A generated admissions offer, communicated to the parent via a signed
+    token link (frontend/offer.html). No parent portal exists yet, so the
+    unguessable token itself is the access control — same trust model as the
+    public Inquiry/Application forms, not a new pattern. Mutable/reusable
+    (OneToOneField): re-offering after a decline or expiry means resetting
+    this same row (see the admin's "Reset Offer" action), not creating a
+    second Offer for the same Application."""
+
+    RESPONSE_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("declined", "Declined"),
+        ("expired", "Expired"),
+    ]
+
+    application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name="offer")
+    token = models.CharField(max_length=64, unique=True, default=_generate_offer_token)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    response = models.CharField(max_length=20, choices=RESPONSE_CHOICES, default="pending")
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Offer for {self.application} ({self.get_response_display()})"
+
+    def refresh_expiry(self):
+        """No scheduler exists in this project yet (no Celery, no cron,
+        nothing deployed), so expiry is resolved lazily here — called
+        wherever `response` is about to matter (Application's save() gate,
+        the public respond endpoint, admin display) — rather than by a
+        timed job that has nowhere to run."""
+        if self.response == "pending" and self.expires_at and timezone.now() > self.expires_at:
+            self.response = "expired"
+            self.save(update_fields=["response"])
+
+    def save(self, *args, **kwargs):
+        """Mirrors Decision.save()'s propagation rule: a newly-resolved
+        negative outcome (declined or expired) pushes Application.stage to
+        'offer_declined' automatically; 'accepted' does not auto-advance to
+        'enrolled' — that's still a deliberate staff action, now unblocked
+        by the enrolled-stage gate."""
+        is_new = self.pk is None
+        previous_response = None if is_new else (
+            Offer.objects.filter(pk=self.pk).values_list("response", flat=True).first()
+        )
+        super().save(*args, **kwargs)
+
+        newly_resolved_negative = (
+            self.response in ("declined", "expired") and self.response != previous_response
+        )
+        if newly_resolved_negative:
+            # Fetch fresh, not self.application — this save() is frequently
+            # called from inside Application.save()'s own gate check (via
+            # refresh_expiry(), called from _has_accepted_offer()), which
+            # means self.application can be the SAME Python instance the
+            # caller already mutated .stage on (e.g. set to "enrolled")
+            # before ever calling .save(). Checking a stale in-memory value
+            # here would silently skip this propagation — confirmed by a
+            # real test failure before this fix.
+            application = Application.objects.get(pk=self.application_id)
+            if application.stage == "offer":
+                application.stage = "offer_declined"
+                application.save()
+
+
+class Capacity(models.Model):
+    """Seats available per (academic_year, year_group). Informational only —
+    Phase 3 shows a soft warning if staff accept past capacity rather than
+    blocking the decision; real admissions has legitimate reasons to go over
+    on paper (sibling priority, board exceptions)."""
+
+    academic_year = models.CharField(max_length=50)
+    year_group = models.CharField(max_length=50)
+    capacity = models.PositiveIntegerField()
+
+    class Meta:
+        unique_together = ("academic_year", "year_group")
+        verbose_name_plural = "capacities"
+
+    def __str__(self):
+        return f"{self.year_group} {self.academic_year}: {self.capacity} seats"
 
 
 class Document(models.Model):

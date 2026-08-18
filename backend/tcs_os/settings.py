@@ -153,3 +153,13 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="admissions@tcsch.edu.gh"
 SUPABASE_URL = env("SUPABASE_URL", default="")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", default="")
 SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-documents")
+
+# Phase 3 — offers. No scheduler exists in this project yet (no Celery, no cron,
+# nothing deployed at all), so expiry is resolved lazily on read rather than by a
+# timed job — see Offer.refresh_expiry() in admissions/models.py.
+OFFER_EXPIRY_DAYS = env.int("OFFER_EXPIRY_DAYS", default=14)
+
+# Base URL of the public frontend, used to build the accept/decline link sent in
+# the offer email. Points at the local static-file server for dev; set to the
+# real subdomain once deployed.
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:5500")

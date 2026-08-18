@@ -108,3 +108,34 @@ def send_application_emails(application):
         ),
         recipient=_staff_email(),
     )
+
+
+def send_offer_email(offer):
+    """Sent to the parent when staff generate an Offer. No parent portal
+    exists, so the accept/decline link carries the offer's own unguessable
+    token — same trust model as the public Inquiry/Application forms."""
+    application = offer.application
+    student = application.student
+    guardian = student.family.guardians.first()
+    if not guardian:
+        return
+
+    link = f"{settings.FRONTEND_BASE_URL}/offer.html?token={offer.token}"
+    expiry_note = (
+        f"This offer expires on {offer.expires_at:%d %B %Y}."
+        if offer.expires_at else ""
+    )
+
+    _send(
+        subject=f"You have an offer from TCS — {student.full_name}",
+        message=(
+            f"Dear {guardian.first_name},\n\n"
+            f"We're pleased to offer {student.full_name} a place at TCS for "
+            f"{application.year_group_applied_for} ({application.academic_year}).\n\n"
+            f"Please respond here: {link}\n\n"
+            f"{expiry_note}\n\n"
+            "If you'd rather confirm by phone, please call our admissions office.\n\n"
+            "— TCS Admissions"
+        ),
+        recipient=guardian.email,
+    )

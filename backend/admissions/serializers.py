@@ -233,3 +233,11 @@ class UploadURLRequestSerializer(serializers.Serializer):
 
     document_type = serializers.ChoiceField(choices=_APPLICATION_DOCUMENT_CHOICES)
     filename = serializers.CharField(max_length=255)
+
+
+class OfferResponseSerializer(serializers.Serializer):
+    """POST /api/admissions/offers/<token>/respond/ — the only field a parent
+    can set on an Offer they didn't generate themselves. 'accepted'/'declined'
+    only; 'pending'/'expired' aren't valid things for a parent to submit."""
+
+    response = serializers.ChoiceField(choices=[("accepted", "Accepted"), ("declined", "Declined")])
