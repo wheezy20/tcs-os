@@ -8,10 +8,11 @@ config never blocks a real inquiry/application from being saved.
 """
 
 import logging
+import mimetypes
 import os
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +21,30 @@ def _staff_email():
     return os.environ.get("ADMISSIONS_STAFF_EMAIL", "admissions@tcsch.edu.gh")
 
 
-def _send(subject, message, recipient):
+def _send(subject, message, recipient, attachments=None):
+    """attachments is a list of filenames, resolved against
+    settings.ADMISSIONS_ATTACHMENTS_DIR — generic on purpose, not tied to any
+    one document, so a prospectus/brochure/whatever can be attached to any
+    email just by naming it in a settings list, no code change needed. A
+    missing file is logged and skipped, not a send failure — the same
+    "never let email plumbing block the actual submission" rule as the rest
+    of this module."""
     try:
-        send_mail(
+        email = EmailMessage(
             subject=subject,
-            message=message,
+            body=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[recipient],
+            to=[recipient],
         )
+        for filename in attachments or []:
+            path = os.path.join(settings.ADMISSIONS_ATTACHMENTS_DIR, filename)
+            if not os.path.isfile(path):
+                logger.warning("Email attachment not found, skipping: %s", path)
+                continue
+            content_type, _ = mimetypes.guess_type(path)
+            with open(path, "rb") as f:
+                email.attach(filename, f.read(), content_type)
+        email.send()
     except Exception:
         logger.exception("Failed to send admissions email: %s", subject)
 
@@ -53,6 +70,10 @@ def send_inquiry_emails(family, applications):
             "— TCS Admissions"
         ),
         recipient=guardian.email,
+        # Empty by default — see settings.INQUIRY_EMAIL_ATTACHMENTS. Drop a
+        # prospectus/brochure into ADMISSIONS_ATTACHMENTS_DIR and list its
+        # filename there to start attaching it, no code change needed.
+        attachments=settings.INQUIRY_EMAIL_ATTACHMENTS,
     )
 
     child_lines = "\n".join(

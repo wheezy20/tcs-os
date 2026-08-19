@@ -4,20 +4,27 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Admissions Offer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --bg: #f5f6f8;
+    /* TCS brand palette — see docs/admissions/brand-tokens.md */
+    --bg: #F3FAFA;
     --card-bg: #ffffff;
-    --border: #d9dce1;
-    --text: #1f2430;
-    --text-muted: #6b7280;
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
+    --border: #D5E5E5;
+    --text: #1A2E2E;
+    --text-muted: #5C7373;
+    --primary: #005E61;      /* Deep Jungle Green — wordmark color on light backgrounds */
+    --primary-hover: #0B4C50; /* Deep Teal Shadow */
+    --accent: #11B87A;       /* Mint Leaf */
     --error: #dc2626;
     --error-bg: #fef2f2;
-    --success: #15803d;
-    --success-bg: #f0fdf4;
+    --success: #0F7A50;
+    --success-bg: #EAFBF3;
     --radius: 8px;
+    --font-heading: "Cinzel", serif;
+    --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
 
   * { box-sizing: border-box; }
@@ -25,7 +32,7 @@
   body {
     margin: 0;
     padding: 2.5rem 1rem;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--font-body);
     background: var(--bg);
     color: var(--text);
     display: flex;
@@ -37,8 +44,22 @@
     max-width: 480px;
   }
 
+  .brand-header {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .brand-header img {
+    height: 52px;
+    width: auto;
+  }
+
   h1 {
-    font-size: 1.5rem;
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.6rem;
+    text-align: center;
     margin-bottom: 0.25rem;
   }
 
@@ -47,6 +68,7 @@
     margin-top: 0;
     margin-bottom: 1.75rem;
     font-size: 0.95rem;
+    text-align: center;
   }
 
   .card {
@@ -66,6 +88,7 @@
   button {
     flex: 1;
     padding: 0.75rem 1rem;
+    font-family: inherit;
     font-size: 1rem;
     font-weight: 600;
     border-radius: 6px;
@@ -110,7 +133,7 @@
   .message.success {
     background: var(--success-bg);
     color: var(--success);
-    border: 1px solid #bbf7d0;
+    border: 1px solid #A8E8CC;
   }
 
   .message.error {
@@ -122,6 +145,9 @@
 </head>
 <body>
 <main>
+  <div class="brand-header">
+    <img src="assets/branding/full-logo-horizontal-white-bg.png" alt="Treasures Christian School" />
+  </div>
   <h1>Your Admissions Offer</h1>
   <p class="subtitle">Please let us know whether you'd like to accept this offer.</p>
 

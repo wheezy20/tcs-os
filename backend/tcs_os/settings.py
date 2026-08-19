@@ -68,7 +68,10 @@ ROOT_URLCONF = "tcs_os.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        # Project-level overrides (e.g. templates/admin/login.html, which extends
+        # and re-brands unfold's own admin/login.html) — DIRS is searched before
+        # app template dirs, so this correctly shadows unfold's version.
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -136,12 +139,55 @@ REST_FRAMEWORK = {
 }
 
 
-# django-unfold — branded admin theme (TCS colours/logo to be added)
+# django-unfold — branded admin theme.
+# Colors: 11-stop "primary" ramp interpolated between actual brand colors
+# (Jungle Mist -> Deep Jungle Green -> Deep Teal Shadow -> near-black), not
+# invented — see docs/admissions/brand-tokens.md. unfold accepts plain hex
+# here (unfold.utils.convert_color handles the conversion).
+# Logo/icon: callables in admissions/branding.py, not hardcoded path strings —
+# see that module's docstring for why (staticfiles manifest hashing).
 UNFOLD = {
-    "SITE_TITLE": "TCS OS Admin",
-    "SITE_HEADER": "TCS OS",
+    "SITE_TITLE": "Treasures Christian School — Admin",
+    "SITE_HEADER": "Treasures Christian School",
+    "SITE_SUBHEADER": "Admissions",
+    "SITE_URL": "/",
+    "SITE_LOGO": {
+        "light": "admissions.branding.logo_light",
+        "dark": "admissions.branding.logo_dark",
+    },
+    "SITE_ICON": {
+        "light": "admissions.branding.favicon",
+        "dark": "admissions.branding.favicon",
+    },
+    "SITE_FAVICONS": [
+        {
+            "rel": "icon",
+            "sizes": "32x32",
+            "type": "image/png",
+            "href": "admissions.branding.favicon",
+        },
+    ],
+    "COLORS": {
+        "primary": {
+            "50": "#E6F3F3",
+            "100": "#C0DADB",
+            "200": "#99C1C2",
+            "300": "#73A8AA",
+            "400": "#4D9092",
+            "500": "#267779",
+            "600": "#005E61",  # Deep Jungle Green — brand anchor
+            "700": "#05565A",
+            "800": "#094F53",
+            "900": "#0A373A",
+            "950": "#081415",
+        },
+    },
 }
 
+# Only the branded Django admin exists as a login-gated surface right now, so
+# send everyone there after login instead of Django's default /accounts/profile/,
+# which 404s (no such view/page exists in this project).
+LOGIN_REDIRECT_URL = "/admin/"
 
 # Email — swap to a real backend (SMTP/SendGrid/etc.) when comms are built in Phase 2+
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
@@ -163,3 +209,12 @@ OFFER_EXPIRY_DAYS = env.int("OFFER_EXPIRY_DAYS", default=14)
 # the offer email. Points at the local static-file server for dev; set to the
 # real subdomain once deployed.
 FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:5500")
+
+# Phase 4 — email attachments (prospectus/brochure, etc.). Generic by design:
+# a directory of files plus a per-email-type filename list, both empty/unset
+# by default so nothing breaks before real files exist. Drop files into this
+# directory and list their names in INQUIRY_EMAIL_ATTACHMENTS (comma-separated
+# env var) to start attaching them — no code change needed. See
+# admissions/emails.py.
+ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "admissions" / "attachments"))
+INQUIRY_EMAIL_ATTACHMENTS = env.list("INQUIRY_EMAIL_ATTACHMENTS", default=[])

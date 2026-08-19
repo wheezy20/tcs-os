@@ -267,6 +267,76 @@ docstring briefly, incorrectly, claimed the warning already existed —
 caught and corrected during a documentation-accuracy pass before this was
 actually built).
 
+## Phase 4 — branding & emailed collateral
+
+Full brand guide followed precisely — colors, logo usage rules, typography —
+not placeholder design. Source of truth: `docs/admissions/brand-tokens.md`
+and the 6 logo PNGs in `frontend/assets/branding/`.
+
+### Admin dashboard (django-unfold)
+
+- `SITE_LOGO`/`SITE_ICON` in `UNFOLD` settings point at **callables**
+  (`admissions/branding.py`), not hardcoded path strings — the callables
+  call Django's `static()` at request time. This matters specifically
+  because of `whitenoise.storage.CompressedManifestStaticFilesStorage`:
+  production serves content-hashed filenames, resolved via the manifest
+  `collectstatic` builds, and only `static()` (not a hand-built string)
+  resolves that correctly in both dev and prod.
+- Light/dark theme both correctly swap logo variant per the brand guide's
+  critical rule (mint-leaf laurel on white / lime laurel on dark) — unfold's
+  `site_logo.html` already supports a `{"light": ..., "dark": ...}` dict for
+  exactly this, no custom template needed for the header/sidebar logo.
+- `COLORS.primary` is an 11-stop ramp interpolated between three real brand
+  colors (Jungle Mist → Deep Jungle Green → Deep Teal Shadow → near-black),
+  computed rather than hand-picked, and checked as a rendered swatch strip
+  before use. unfold's `convert_color()` accepts plain hex directly.
+- **Login page**: `backend/templates/admin/login.html` overrides unfold's
+  own `admin/login.html` — via `TEMPLATES[0]["DIRS"]` (searched before app
+  template dirs) plus `{% extends "admin/login.html" %}` from within the
+  override itself, which Django's template loader resolves to the *next*
+  match in the search chain (unfold's version), not an infinite loop. This
+  is why: unfold's `LOGIN.image` config renders as a `background-image:
+  cover` on a large side panel, designed for a full-bleed photo — forcing a
+  logo mark (mostly transparent negative space) into that slot would crop
+  it badly. The override instead prepends the vertical logo (again
+  light/dark-swapped) above `{{ block.super }}`, keeping all of unfold's
+  own markup intact rather than duplicating it.
+- Brand assets live in **two places**, not one: `frontend/assets/branding/`
+  (used directly by the standalone HTML forms below) and
+  `backend/admissions/static/admissions/branding/` (Django's static
+  pipeline). The plan was to point `STATICFILES_DIRS` at the frontend copy
+  to avoid duplication, but the Dockerfile's `collectstatic` runs inside a
+  `backend/`-scoped build context that may not include the sibling
+  `frontend/` directory depending on how the image gets built — a
+  cross-directory static dir would work in local dev and silently break on
+  the first real deploy. Caught before implementing, not after. If the
+  brand assets are ever updated, both copies need updating.
+
+### Public forms
+
+`index.html`, `application.html`, `offer.html` — all three got the
+identical treatment: Google Fonts `<link>` (Cinzel for `h1`/`legend`, DM
+Sans for everything else), the same brand color palette as the admin
+(Deep Jungle Green primary, Mint-Leaf-tinted success state), and a
+horizontal-logo header. Still fully dependency-free, no build step. One gap
+found and fixed while doing this: browsers don't inherit `font-family` on
+buttons/form controls by default, so every button rule across all three
+files needed an explicit `font-family: inherit` or DM Sans would only have
+applied to text, not button labels.
+
+### Email attachments
+
+`admissions/emails.py`'s `_send()` switched from `send_mail()` to
+`EmailMessage` specifically for attachment support. Generic on purpose, per
+the explicit ask — `ADMISSIONS_ATTACHMENTS_DIR` (a directory) plus a
+per-email-type filename list (`INQUIRY_EMAIL_ATTACHMENTS`, currently empty)
+rather than hardcoding any one document. Wired into the Inquiry
+parent-confirmation email as the flagship use; a missing configured file is
+logged and skipped, never blocks the send (same "never let email plumbing
+block the actual submission" rule as the rest of this module). Extending
+attachments to Application/Offer emails later is a one-line change — pass
+another settings list into that email's `_send()` call.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.

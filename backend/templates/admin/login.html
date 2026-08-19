@@ -1,0 +1,12 @@
+{% extends "admin/login.html" %}
+{% load static %}
+
+{% block content %}
+    <div class="flex justify-center mb-6">
+        <img src="{% static 'admissions/branding/full-logo-vertical-white-bg.png' %}"
+             alt="Treasures Christian School" class="h-28 dark:hidden" />
+        <img src="{% static 'admissions/branding/full-logo-vertical-teal-bg.png' %}"
+             alt="Treasures Christian School" class="h-28 hidden dark:block" />
+    </div>
+    {{ block.super }}
+{% endblock %}
