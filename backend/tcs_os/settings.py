@@ -189,8 +189,21 @@ UNFOLD = {
 # which 404s (no such view/page exists in this project).
 LOGIN_REDIRECT_URL = "/admin/"
 
-# Email — swap to a real backend (SMTP/SendGrid/etc.) when comms are built in Phase 2+
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# Email — Resend via its SMTP relay (no extra dependency: Django's built-in
+# smtp backend works as-is, Resend just needs "resend" as the username and
+# the API key as the password). Falls back to the console backend — prints
+# to stdout, sends nothing — whenever RESEND_API_KEY is unset, so local
+# dev and CI never need real credentials.
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
+if RESEND_API_KEY:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.resend.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = "resend"  # literal string Resend requires, not a placeholder
+    EMAIL_HOST_PASSWORD = RESEND_API_KEY
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="admissions@tcsch.edu.gh")
 
 # Supabase Storage — used to mint signed upload/download URLs for admissions documents.
@@ -205,10 +218,12 @@ SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-doc
 # timed job — see Offer.refresh_expiry() in admissions/models.py.
 OFFER_EXPIRY_DAYS = env.int("OFFER_EXPIRY_DAYS", default=14)
 
-# Base URL of the public frontend, used to build the accept/decline link sent in
-# the offer email. Points at the local static-file server for dev; set to the
-# real subdomain once deployed.
-FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:5500")
+# Base URL used to build the accept/decline link sent in the offer email.
+# As of the /inquiry, /apply, /offer routing (see tcs_os/urls.py), the offer
+# page is served by this same Django app, so the dev default is the Django
+# dev server itself, not a separate static-file server. Set to the real
+# subdomain (e.g. https://admissions.tcsch.edu.gh) once deployed.
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:8000")
 
 # Phase 4 — email attachments (prospectus/brochure, etc.). Generic by design:
 # a directory of files plus a per-email-type filename list, both empty/unset

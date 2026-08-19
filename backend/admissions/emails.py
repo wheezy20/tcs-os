@@ -141,7 +141,7 @@ def send_offer_email(offer):
     if not guardian:
         return
 
-    link = f"{settings.FRONTEND_BASE_URL}/offer.html?token={offer.token}"
+    link = f"{settings.FRONTEND_BASE_URL}/offer?token={offer.token}"
     expiry_note = (
         f"This offer expires on {offer.expires_at:%d %B %Y}."
         if offer.expires_at else ""

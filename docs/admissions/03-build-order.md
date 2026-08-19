@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: Phase 4 — not started**
+**Current phase: Phase 4.5 — deployment prep, in progress**
 
 ---
 
@@ -86,6 +86,19 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 - Generic file-attachment support added to `admissions/emails.py` (`_send()` now uses `EmailMessage` instead of `send_mail()` for attachment support) — a directory (`ADMISSIONS_ATTACHMENTS_DIR`) plus a per-email-type filename list (`INQUIRY_EMAIL_ATTACHMENTS`, currently empty), not hardcoded to any one document. A missing configured file is logged and skipped, never blocks the send. Wired into the Inquiry parent-confirmation email as the flagship use; extending to other email types is a one-line change once needed.
 
 **A real deployment risk caught and avoided, not just discovered after the fact:** the plan was to point Django's `STATICFILES_DIRS` at the existing `frontend/assets/` directory to avoid duplicating the logo files. Caught before implementing: the Dockerfile's `collectstatic` runs at build time inside a `backend/`-scoped build context, which may not include the sibling `frontend/` directory depending on how the image is built — a `STATICFILES_DIRS` entry pointing outside that context would silently work in dev and break on first real deploy. Copied the 6 logo files into `admissions/static/admissions/branding/` instead (Django's standard per-app static convention, guaranteed inside the build context) — at the cost of the assets existing in two places (`frontend/assets/branding/` for the standalone HTML forms, `backend/admissions/static/admissions/branding/` for Django) that need manual sync if the brand assets are ever updated.
+
+## Phase 4.5 — Deployment prep — in progress (2026-08-19)
+
+Closes out the "still not done" item flagged back in Phase 1 (Cloudflare, real subdomain) — this is that go-live work, not new admissions functionality.
+
+**What shipped:**
+- Routing: `/inquiry`, `/apply`, `/offer` now served directly by Django (`tcs_os/urls.py`, plain `TemplateView`s), so the whole module — API, admin, and public forms — lives under one subdomain with no separate static host or cross-origin surface. `/` redirects to `/inquiry` (the actual top-of-funnel entry point). Templates live in `backend/templates/public/`, adapted copies of `frontend/*.html` — asset paths go through `{% static %}` (reusing the branding files already duplicated into `admissions/static/` for Phase 4, no third copy) and the API base URL is root-relative (`/api/admissions/...`) instead of hardcoded to `127.0.0.1:8000`. `frontend/*.html` are left as-is, still useful for a quick local preview outside Django — see the tradeoff note in `04-build-log.md`.
+- `emails.py`'s offer link fixed from `/offer.html?token=` to `/offer?token=`, matching the new route (no `.html`).
+- Dockerfile hardened for production, verified with real `docker build` + `docker run`, not just read-through: added a non-root user (a real bug was hit and fixed while doing this — see build log), dropped an unnecessary `build-essential`/`libpq-dev` install (requirements.txt only uses `psycopg2-binary`, a prebuilt wheel), and fixed a real build-breaking bug found in the *existing* Dockerfile (`collectstatic` needs `SECRET_KEY`/`DATABASE_URL` just to import settings, and neither had a build-time value — the image never actually built before this).
+- Resend wired up as `EMAIL_BACKEND` via Django's built-in SMTP backend (Resend's SMTP relay, not `django-anymail` — no new dependency; confirmed against Resend's own docs that SMTP is directly supported, not assumed). Gated behind `RESEND_API_KEY`: unset falls back to the console backend exactly as before, so local dev is unaffected.
+- `docs/deployment.md` — full `gcloud` command sequence for the first real deploy (Secret Manager, Artifact Registry, Cloud Run service + Jobs for migrate/createsuperuser, domain mapping). Not run — written for you to execute.
+
+**Not done here, deliberately out of scope:** Turnstile on the forms, the Cloudflare rate-limit rule on `/api/admissions/*` — both flagged as open since Phase 1, still open.
 
 ## Phase 5 — CRM & marketing layer
 - Enquiries before application (lead capture even without a full application)

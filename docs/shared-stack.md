@@ -26,6 +26,8 @@ Net: Django is the only thing that talks to the database. Supabase is used purel
 
 ## Deployment (Cloud Run)
 
+**Step-by-step commands: `docs/deployment.md`.** The notes below are the standing architecture; that file is the how-to.
+
 - Django app packaged as a single Docker image, one Cloud Run service for the whole `backend/` project (all module apps included, since it's one Django project).
 - Connects to Supabase Postgres over the standard connection string, same as local dev, no Cloud SQL needed.
 - Secrets (DB URL, Supabase keys, `SECRET_KEY`) stored in **Google Secret Manager**, injected as env vars at deploy time, not baked into the image. `settings.py` reads them via `django-environ` (e.g. `env('DATABASE_URL')`), same pattern locally from a gitignored `.env` file and in production from Secret Manager, never hardcoded either place.
@@ -44,7 +46,9 @@ Net: Django is the only thing that talks to the database. Supabase is used purel
 
 ## Frontend pattern
 
-Public-facing forms/portals per module are built with Lovable and/or Claude-generated UI, and submit to that module's DRF endpoints. Not part of the Django project itself.
+Public-facing forms/portals per module are built with Lovable and/or Claude-generated UI, and submit to that module's DRF endpoints.
+
+**Revised 2026-08-19:** originally these lived outside the Django project entirely (a separate static host). As of admissions going to real deployment, they're served by Django itself via plain `TemplateView` routes (e.g. `/inquiry`, `/apply`, `/offer` — see `docs/admissions/04-build-log.md`), so the whole module — API, admin, and public forms — sits behind the one subdomain with no separate hosting/CORS surface to manage. The HTML/CSS/JS itself is still hand-built, dependency-free, no build step; only *where it's served from* changed. Future modules should follow the same pattern rather than standing up a separate static host per module.
 
 ## Per-module folders
 

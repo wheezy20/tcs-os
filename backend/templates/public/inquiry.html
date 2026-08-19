@@ -1,0 +1,810 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admissions Enquiry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* TCS brand palette — see docs/admissions/brand-tokens.md */
+    --bg: #F3FAFA;
+    --card-bg: #ffffff;
+    --border: #D5E5E5;
+    --text: #1A2E2E;
+    --text-muted: #5C7373;
+    --primary: #005E61;      /* Deep Jungle Green — wordmark color on light backgrounds */
+    --primary-hover: #0B4C50; /* Deep Teal Shadow */
+    --accent: #11B87A;       /* Mint Leaf */
+    --error: #dc2626;
+    --error-bg: #fef2f2;
+    --success: #0F7A50;
+    --success-bg: #EAFBF3;
+    --radius: 8px;
+    --font-heading: "Cinzel", serif;
+    --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2.5rem 1rem;
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+  }
+
+  main {
+    width: 100%;
+    max-width: 640px;
+  }
+
+  .brand-header {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .brand-header img {
+    height: 52px;
+    width: auto;
+  }
+
+  h1 {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.6rem;
+    text-align: center;
+    margin-bottom: 0.25rem;
+  }
+
+  .subtitle {
+    color: var(--text-muted);
+    margin-top: 0;
+    margin-bottom: 1.75rem;
+    font-size: 0.95rem;
+    text-align: center;
+  }
+
+  form {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.75rem;
+  }
+
+  fieldset {
+    border: none;
+    padding: 0;
+    margin: 0 0 2rem 0;
+  }
+
+  fieldset:last-of-type {
+    margin-bottom: 0;
+  }
+
+  legend {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.1rem;
+    padding: 0 0 0.75rem 0;
+    width: 100%;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.1rem;
+  }
+
+  legend .section-number {
+    color: var(--primary);
+    margin-right: 0.4rem;
+  }
+
+  .block-heading {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin: 0 0 0.85rem 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .guardian-block, .child-block {
+    margin-bottom: 1.25rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px dashed var(--border);
+  }
+
+  .guardian-block:last-of-type, .child-block:last-of-type {
+    border-bottom: none;
+    padding-bottom: 0;
+    margin-bottom: 0;
+  }
+
+  .field {
+    margin-bottom: 1rem;
+  }
+
+  .field:last-child {
+    margin-bottom: 0;
+  }
+
+  .row {
+    display: flex;
+    gap: 1rem;
+  }
+
+  .row .field {
+    flex: 1;
+    min-width: 0;
+  }
+
+  label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-bottom: 0.35rem;
+  }
+
+  label .required {
+    color: var(--error);
+  }
+
+  input, select, textarea {
+    width: 100%;
+    padding: 0.55rem 0.65rem;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+    font-family: inherit;
+  }
+
+  textarea {
+    resize: vertical;
+    min-height: 5rem;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+
+  .other-input {
+    margin-top: 0.5rem;
+  }
+
+  .hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+  }
+
+  .link-btn {
+    background: none;
+    border: none;
+    font-family: inherit;
+    color: var(--primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .link-btn:hover {
+    text-decoration: underline;
+  }
+
+  .link-btn.subtle {
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  button[type="submit"] {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--primary);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  button[type="submit"]:hover:not(:disabled) {
+    background: var(--primary-hover);
+  }
+
+  button[type="submit"]:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .message {
+    display: none;
+    margin-bottom: 1.25rem;
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .message.visible {
+    display: block;
+  }
+
+  .message.success {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid #A8E8CC;
+  }
+
+  .message.error {
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid #fecaca;
+  }
+
+  .field-error {
+    color: var(--error);
+    font-size: 0.78rem;
+    margin-top: 0.3rem;
+    display: none;
+  }
+
+  .field-error.visible {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand-header">
+    <img src="{% static 'admissions/branding/full-logo-horizontal-white-bg.png' %}" alt="Treasures Christian School" />
+  </div>
+  <h1>Admissions Enquiry</h1>
+  <p class="subtitle">Tell us about your family and we'll be in touch about next steps.</p>
+
+  <div id="form-message" class="message" role="status" aria-live="polite"></div>
+
+  <form id="inquiry-form" novalidate>
+
+    <fieldset>
+      <legend><span class="section-number">1.</span>How did you hear about us?</legend>
+      <div class="field">
+        <label for="referral_source">Referral source <span class="required">*</span></label>
+        <select id="referral_source" data-other-toggle="referral_source_other" required>
+          <option value="" disabled selected>Select one</option>
+          <option value="current_parent">Current parent of TCS</option>
+          <option value="former_parent">Former parent of TCS</option>
+          <option value="parent_referral">Parent referral</option>
+          <option value="staff_referral">Staff referral</option>
+          <option value="website">Website</option>
+          <option value="friend_colleague">Friend/Colleague</option>
+          <option value="social_media">Social Media</option>
+          <option value="other">Other</option>
+        </select>
+        <input type="text" id="referral_source_other" class="other-input" placeholder="Please specify" hidden />
+        <div class="field-error" data-error-for="referral_source"></div>
+        <div class="field-error" data-error-for="referral_source_other"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend><span class="section-number">2.</span>Parent / Guardian information</legend>
+
+      <div class="guardian-block" data-index="0">
+        <p class="block-heading">Parent / Guardian 1</p>
+
+        <div class="row">
+          <div class="field">
+            <label for="guardian_surname_0">Surname / Family name <span class="required">*</span></label>
+            <input type="text" id="guardian_surname_0" required />
+            <div class="field-error" data-error-for="guardians.0.surname"></div>
+          </div>
+          <div class="field">
+            <label for="guardian_first_name_0">First name(s) <span class="required">*</span></label>
+            <input type="text" id="guardian_first_name_0" required />
+            <div class="field-error" data-error-for="guardians.0.first_name"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_relationship_0">Relationship to child <span class="required">*</span></label>
+          <select id="guardian_relationship_0" required>
+            <option value="" disabled selected>Select one</option>
+            <option value="father">Father</option>
+            <option value="mother">Mother</option>
+            <option value="guardian">Legal Guardian</option>
+            <option value="other">Other</option>
+          </select>
+          <div class="field-error" data-error-for="guardians.0.relationship"></div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_religion_0">Religion <span class="required">*</span></label>
+          <input type="text" id="guardian_religion_0" required />
+          <div class="field-error" data-error-for="guardians.0.religion"></div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_address_0">Address <span class="required">*</span></label>
+          <input type="text" id="guardian_address_0" required />
+          <div class="field-error" data-error-for="guardians.0.address"></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="guardian_town_city_0">Town / City <span class="required">*</span></label>
+            <input type="text" id="guardian_town_city_0" required />
+            <div class="field-error" data-error-for="guardians.0.town_city"></div>
+          </div>
+          <div class="field">
+            <label for="guardian_phone_0">Contact number <span class="required">*</span></label>
+            <input type="tel" id="guardian_phone_0" placeholder="+233 XX XXX XXXX" required />
+            <div class="hint">+233 for Ghana</div>
+            <div class="field-error" data-error-for="guardians.0.phone"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_email_0">Active email address <span class="required">*</span></label>
+          <input type="email" id="guardian_email_0" required />
+          <div class="field-error" data-error-for="guardians.0.email"></div>
+        </div>
+      </div>
+
+      <button type="button" id="add-guardian-btn" class="link-btn">+ Add a second parent / guardian</button>
+
+      <div class="guardian-block" data-index="1" id="guardian-block-1" hidden>
+        <p class="block-heading">
+          Parent / Guardian 2
+          <button type="button" id="remove-guardian-btn" class="link-btn subtle">Remove</button>
+        </p>
+
+        <div class="row">
+          <div class="field">
+            <label for="guardian_surname_1">Surname / Family name <span class="required">*</span></label>
+            <input type="text" id="guardian_surname_1" />
+            <div class="field-error" data-error-for="guardians.1.surname"></div>
+          </div>
+          <div class="field">
+            <label for="guardian_first_name_1">First name(s) <span class="required">*</span></label>
+            <input type="text" id="guardian_first_name_1" />
+            <div class="field-error" data-error-for="guardians.1.first_name"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_relationship_1">Relationship to child <span class="required">*</span></label>
+          <select id="guardian_relationship_1">
+            <option value="" disabled selected>Select one</option>
+            <option value="father">Father</option>
+            <option value="mother">Mother</option>
+            <option value="guardian">Legal Guardian</option>
+            <option value="other">Other</option>
+          </select>
+          <div class="field-error" data-error-for="guardians.1.relationship"></div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_religion_1">Religion <span class="required">*</span></label>
+          <input type="text" id="guardian_religion_1" />
+          <div class="field-error" data-error-for="guardians.1.religion"></div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_address_1">Address <span class="required">*</span></label>
+          <input type="text" id="guardian_address_1" />
+          <div class="field-error" data-error-for="guardians.1.address"></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="guardian_town_city_1">Town / City <span class="required">*</span></label>
+            <input type="text" id="guardian_town_city_1" />
+            <div class="field-error" data-error-for="guardians.1.town_city"></div>
+          </div>
+          <div class="field">
+            <label for="guardian_phone_1">Contact number <span class="required">*</span></label>
+            <input type="tel" id="guardian_phone_1" placeholder="+233 XX XXX XXXX" />
+            <div class="hint">+233 for Ghana</div>
+            <div class="field-error" data-error-for="guardians.1.phone"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="guardian_email_1">Active email address <span class="required">*</span></label>
+          <input type="email" id="guardian_email_1" />
+          <div class="field-error" data-error-for="guardians.1.email"></div>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend><span class="section-number">3.</span>The enquiry</legend>
+
+      <div class="field">
+        <label for="children_count">How many children are you seeking to enrol? <span class="required">*</span></label>
+        <select id="children_count" required>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+
+      <div id="children-container"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend><span class="section-number">4.</span>Other information</legend>
+      <div class="field">
+        <label for="comments">Comments, suggestions or questions</label>
+        <textarea id="comments" placeholder="Anything else we should know?"></textarea>
+        <div class="field-error" data-error-for="comments"></div>
+      </div>
+    </fieldset>
+
+    <button type="submit" id="submit-btn">Submit enquiry</button>
+  </form>
+</main>
+
+<script>
+  const API_URL = "/api/admissions/inquiries/";
+  const form = document.getElementById("inquiry-form");
+  const submitBtn = document.getElementById("submit-btn");
+  const messageBox = document.getElementById("form-message");
+  const childrenContainer = document.getElementById("children-container");
+  const childrenCountSelect = document.getElementById("children_count");
+  const addGuardianBtn = document.getElementById("add-guardian-btn");
+  const removeGuardianBtn = document.getElementById("remove-guardian-btn");
+  const guardianBlock1 = document.getElementById("guardian-block-1");
+
+  const CURRENT_GRADE_OPTIONS = [
+    "Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "Kindergarten 2",
+    "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6",
+  ];
+  const TARGET_GRADE_OPTIONS = CURRENT_GRADE_OPTIONS.concat([
+    "Grade 7", "Grade 8", "Grade 9", "Grade 10", "Grade 11", "Grade 12",
+  ]);
+
+  function gradeOptionsHtml(options) {
+    return (
+      `<option value="" disabled selected>Select one</option>` +
+      options.map((g) => `<option value="${g}">${g}</option>`).join("") +
+      `<option value="other">Other</option>`
+    );
+  }
+
+  function childBlockHtml(index) {
+    return `
+      <div class="child-block" data-index="${index}">
+        <p class="block-heading">Child ${index + 1}</p>
+
+        <div class="field">
+          <label for="student_full_name_${index}">Full name <span class="required">*</span></label>
+          <input type="text" id="student_full_name_${index}" data-field="full_name" required />
+          <div class="field-error" data-error-for="students.${index}.full_name"></div>
+        </div>
+
+        <div class="field">
+          <label for="student_dob_${index}">Date of birth <span class="required">*</span></label>
+          <input type="date" id="student_dob_${index}" data-field="date_of_birth" required />
+          <div class="hint" id="student_age_${index}"></div>
+          <div class="field-error" data-error-for="students.${index}.date_of_birth"></div>
+        </div>
+
+        <div class="field">
+          <label for="student_current_school_${index}">Learner's current school <span class="required">*</span></label>
+          <input type="text" id="student_current_school_${index}" data-field="current_school" placeholder="State N/A if not yet enrolled" required />
+          <div class="field-error" data-error-for="students.${index}.current_school"></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="student_current_grade_${index}">Current grade / class <span class="required">*</span></label>
+            <select id="student_current_grade_${index}" data-field="current_grade" data-other-toggle="student_current_grade_other_${index}" required>
+              ${gradeOptionsHtml(CURRENT_GRADE_OPTIONS)}
+            </select>
+            <input type="text" id="student_current_grade_other_${index}" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="students.${index}.current_grade"></div>
+          </div>
+          <div class="field">
+            <label for="student_target_grade_${index}">Grade seeking admission into <span class="required">*</span></label>
+            <select id="student_target_grade_${index}" data-field="year_group_applied_for" data-other-toggle="student_target_grade_other_${index}" required>
+              ${gradeOptionsHtml(TARGET_GRADE_OPTIONS)}
+            </select>
+            <input type="text" id="student_target_grade_other_${index}" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="students.${index}.year_group_applied_for"></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="student_academic_year_${index}">Academic year enquiring for <span class="required">*</span></label>
+            <select id="student_academic_year_${index}" data-field="academic_year" data-other-toggle="student_academic_year_other_${index}" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="2026">2026</option>
+              <option value="2027">2027</option>
+              <option value="2028">2028</option>
+              <option value="2029">2029</option>
+              <option value="2030">2030</option>
+              <option value="2031">2031</option>
+              <option value="2032">2032</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="text" id="student_academic_year_other_${index}" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="students.${index}.academic_year"></div>
+          </div>
+          <div class="field">
+            <label for="student_month_${index}">Month of enrolment <span class="required">*</span></label>
+            <select id="student_month_${index}" data-field="month_of_enrollment" data-other-toggle="student_month_other_${index}" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="January">January (Limited Admissions)</option>
+              <option value="September">September</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="text" id="student_month_other_${index}" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="students.${index}.month_of_enrollment"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function syncChildBlocks(count) {
+    const current = childrenContainer.querySelectorAll(".child-block").length;
+    if (count > current) {
+      for (let i = current; i < count; i++) {
+        childrenContainer.insertAdjacentHTML("beforeend", childBlockHtml(i));
+      }
+    } else if (count < current) {
+      for (let i = current - 1; i >= count; i--) {
+        const block = childrenContainer.querySelector(`.child-block[data-index="${i}"]`);
+        if (block) block.remove();
+      }
+    }
+  }
+
+  childrenCountSelect.addEventListener("change", () => {
+    syncChildBlocks(parseInt(childrenCountSelect.value, 10));
+  });
+
+  syncChildBlocks(1);
+
+  addGuardianBtn.addEventListener("click", () => {
+    guardianBlock1.hidden = false;
+    addGuardianBtn.hidden = true;
+    guardianBlock1.querySelectorAll("input, select").forEach((el) => {
+      if (el.tagName === "SELECT" || el.type !== "text" || !el.classList.contains("other-input")) {
+        el.required = true;
+      }
+    });
+  });
+
+  removeGuardianBtn.addEventListener("click", () => {
+    guardianBlock1.hidden = true;
+    addGuardianBtn.hidden = false;
+    guardianBlock1.querySelectorAll("input, select").forEach((el) => {
+      el.required = false;
+      el.value = "";
+    });
+    const otherInput = document.getElementById("guardian_relationship_other_1");
+    if (otherInput) otherInput.hidden = true;
+  });
+
+  function computeAge(dobStr) {
+    if (!dobStr) return null;
+    const dob = new Date(dobStr);
+    if (isNaN(dob.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const m = today.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+    return age >= 0 ? age : null;
+  }
+
+  form.addEventListener("input", (event) => {
+    if (event.target.matches('input[data-field="date_of_birth"]')) {
+      const block = event.target.closest(".child-block");
+      const index = block.dataset.index;
+      const ageEl = document.getElementById(`student_age_${index}`);
+      const age = computeAge(event.target.value);
+      ageEl.textContent = age !== null ? `Age: ${age} year${age === 1 ? "" : "s"}` : "";
+    }
+  });
+
+  form.addEventListener("change", (event) => {
+    const select = event.target;
+    if (select.tagName === "SELECT" && select.dataset.otherToggle) {
+      const otherEl = document.getElementById(select.dataset.otherToggle);
+      if (!otherEl) return;
+      const isOther = select.value === "other";
+      otherEl.hidden = !isOther;
+      otherEl.required = isOther;
+      if (!isOther) otherEl.value = "";
+    }
+  });
+
+  function resolveSelectValue(selectEl) {
+    if (selectEl.value === "other") {
+      const otherEl = document.getElementById(selectEl.dataset.otherToggle);
+      return otherEl ? otherEl.value.trim() : "";
+    }
+    return selectEl.value;
+  }
+
+  function collectGuardianData(index) {
+    return {
+      surname: document.getElementById(`guardian_surname_${index}`).value.trim(),
+      first_name: document.getElementById(`guardian_first_name_${index}`).value.trim(),
+      relationship: document.getElementById(`guardian_relationship_${index}`).value,
+      religion: document.getElementById(`guardian_religion_${index}`).value.trim(),
+      address: document.getElementById(`guardian_address_${index}`).value.trim(),
+      town_city: document.getElementById(`guardian_town_city_${index}`).value.trim(),
+      phone: document.getElementById(`guardian_phone_${index}`).value.trim(),
+      email: document.getElementById(`guardian_email_${index}`).value.trim(),
+    };
+  }
+
+  function collectChildData(index) {
+    const block = childrenContainer.querySelector(`.child-block[data-index="${index}"]`);
+    return {
+      full_name: block.querySelector('[data-field="full_name"]').value.trim(),
+      date_of_birth: block.querySelector('[data-field="date_of_birth"]').value,
+      current_school: block.querySelector('[data-field="current_school"]').value.trim(),
+      current_grade: resolveSelectValue(block.querySelector('[data-field="current_grade"]')),
+      year_group_applied_for: resolveSelectValue(block.querySelector('[data-field="year_group_applied_for"]')),
+      academic_year: resolveSelectValue(block.querySelector('[data-field="academic_year"]')),
+      month_of_enrollment: resolveSelectValue(block.querySelector('[data-field="month_of_enrollment"]')),
+    };
+  }
+
+  function collectPayload() {
+    const referralSelect = document.getElementById("referral_source");
+
+    const guardians = [collectGuardianData(0)];
+    if (!guardianBlock1.hidden) {
+      guardians.push(collectGuardianData(1));
+    }
+
+    const childCount = parseInt(childrenCountSelect.value, 10);
+    const students = [];
+    for (let i = 0; i < childCount; i++) {
+      students.push(collectChildData(i));
+    }
+
+    const payload = {
+      referral_source: referralSelect.value,
+      guardians,
+      students,
+    };
+
+    if (referralSelect.value === "other") {
+      payload.referral_source_other = document.getElementById("referral_source_other").value.trim();
+    }
+
+    const comments = document.getElementById("comments").value.trim();
+    if (comments) payload.comments = comments;
+
+    return payload;
+  }
+
+  function clearMessages() {
+    messageBox.className = "message";
+    messageBox.innerHTML = "";
+    document.querySelectorAll(".field-error").forEach((el) => {
+      el.textContent = "";
+      el.classList.remove("visible");
+    });
+  }
+
+  function showMessage(text, type) {
+    messageBox.textContent = text;
+    messageBox.className = `message visible ${type}`;
+  }
+
+  function showFieldErrors(errors, prefix, globalErrors) {
+    Object.entries(errors).forEach(([key, val]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (Array.isArray(val)) {
+        if (val.length && typeof val[0] === "object" && val[0] !== null) {
+          val.forEach((itemErrors, idx) => {
+            if (itemErrors && Object.keys(itemErrors).length) {
+              showFieldErrors(itemErrors, `${path}.${idx}`, globalErrors);
+            }
+          });
+        } else if (val.length) {
+          const el = document.querySelector(`[data-error-for="${path}"]`);
+          const text = val.join(" ");
+          if (el) {
+            el.textContent = text;
+            el.classList.add("visible");
+          } else {
+            globalErrors.push(text);
+          }
+        }
+      } else if (val && typeof val === "object") {
+        showFieldErrors(val, path, globalErrors);
+      }
+    });
+  }
+
+  function resetDynamicState() {
+    childrenCountSelect.value = "1";
+    syncChildBlocks(1);
+    guardianBlock1.hidden = true;
+    addGuardianBtn.hidden = false;
+    document.querySelectorAll(".other-input").forEach((el) => {
+      el.hidden = true;
+      el.required = false;
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearMessages();
+
+    const payload = collectPayload();
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitting…";
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const names = data.applications.map((a) => a.student_full_name).join(", ");
+        showMessage(
+          `Thank you! We've received your enquiry for ${names}. Our admissions team will be in touch soon.`,
+          "success"
+        );
+        form.reset();
+        resetDynamicState();
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 400 && typeof errorData === "object") {
+          const globalErrors = [];
+          showFieldErrors(errorData, "", globalErrors);
+          showMessage(
+            globalErrors.length
+              ? `Please correct the highlighted fields. ${globalErrors.join(" ")}`
+              : "Please correct the highlighted fields and try again.",
+            "error"
+          );
+        } else if (response.status === 429) {
+          showMessage("Too many submissions. Please try again later.", "error");
+        } else {
+          showMessage("Something went wrong submitting your enquiry. Please try again.", "error");
+        }
+      }
+    } catch (err) {
+      showMessage("Could not reach the server. Please check your connection and try again.", "error");
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Submit enquiry";
+    }
+  });
+</script>
+</body>
+</html>

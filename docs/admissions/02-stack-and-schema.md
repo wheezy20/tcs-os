@@ -337,6 +337,61 @@ block the actual submission" rule as the rest of this module). Extending
 attachments to Application/Offer emails later is a one-line change — pass
 another settings list into that email's `_send()` call.
 
+## Phase 4.5 — deployment prep
+
+Closes the Phase 1 "still not done" item (real subdomain, Cloudflare). Full
+step-by-step: `docs/deployment.md`.
+
+### Routing
+
+```
+GET    /              (302 → /inquiry)
+GET    /inquiry        public inquiry form
+GET    /apply           public application form
+GET    /offer           parent-facing offer accept/decline page
+```
+
+Served directly by Django (`tcs_os/urls.py`, plain `TemplateView`s) rather
+than a separate static host — see the revised "Frontend pattern" note in
+`docs/shared-stack.md`. Templates live in `backend/templates/public/`,
+adapted from `frontend/*.html`: the branding image goes through `{% static
+%}` (reusing the same file already duplicated into `admissions/static/` for
+Phase 4, not a third copy) and the JS API base URL is root-relative
+(`/api/admissions/...`) instead of the old hardcoded `127.0.0.1:8000`.
+`frontend/*.html` are unchanged, kept for a quick local preview outside
+Django — a second copy of each form's markup that needs manual sync on
+future edits, same tradeoff already accepted for the branding PNGs.
+
+`emails.py`'s offer link changed from `/offer.html?token=` to
+`/offer?token=` to match.
+
+### Email
+
+`EMAIL_BACKEND` now switches on `RESEND_API_KEY`: set, it uses Django's
+built-in SMTP backend against Resend's SMTP relay
+(`smtp.resend.com:587`, username literally `"resend"`); unset, it falls
+back to the console backend exactly as before. Chose plain SMTP over
+`django-anymail` — Resend supports SMTP directly (confirmed against its own
+docs, not assumed from the SendGrid precedent), so the same no-new-dependency
+reasoning holds; nothing here needs anymail's HTTP-API-only features
+(tracking, dynamic templates) yet.
+
+### Dockerfile
+
+Reviewed *and* verified with a real `docker build` + `docker run`, not read
+through — this found two real, previously-untested bugs:
+- `collectstatic` (already present) needs `SECRET_KEY`/`DATABASE_URL` just
+  to import settings — neither had a build-time value, so the image had
+  never actually been buildable. Fixed with placeholder values scoped to
+  that one `RUN` step's environment, not baked into the image.
+- The added non-root user's home directory (`useradd -r` alone points
+  `$HOME` at `/home/django` without creating it) caused a real `Permission
+  denied` from gunicorn's control socket under `docker run`. Fixed by
+  setting home to `/app` explicitly.
+
+Also dropped `build-essential`/`libpq-dev` — `psycopg2-binary` is a
+prebuilt wheel, nothing in `requirements.txt` needs a compiler.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.

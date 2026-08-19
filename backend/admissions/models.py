@@ -338,7 +338,7 @@ class Decision(models.Model):
 
 class Offer(models.Model):
     """A generated admissions offer, communicated to the parent via a signed
-    token link (frontend/offer.html). No parent portal exists yet, so the
+    token link (the /offer page). No parent portal exists yet, so the
     unguessable token itself is the access control — same trust model as the
     public Inquiry/Application forms, not a new pattern. Mutable/reusable
     (OneToOneField): re-offering after a decline or expiry means resetting
