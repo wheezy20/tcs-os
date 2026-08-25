@@ -184,6 +184,25 @@
     margin-top: 0.3rem;
   }
 
+  .checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.4rem;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .checkbox-field input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+  }
+
+  input:disabled {
+    background: var(--bg);
+    color: var(--text-muted);
+  }
+
   .link-btn {
     background: none;
     border: none;
@@ -351,8 +370,8 @@
           </div>
           <div class="field">
             <label for="guardian_phone_0">Contact number <span class="required">*</span></label>
-            <input type="tel" id="guardian_phone_0" placeholder="+233 XX XXX XXXX" required />
-            <div class="hint">+233 for Ghana</div>
+            <input type="tel" id="guardian_phone_0" placeholder="+233XXXXXXXXX" required />
+            <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
             <div class="field-error" data-error-for="guardians.0.phone"></div>
           </div>
         </div>
@@ -407,6 +426,9 @@
         <div class="field">
           <label for="guardian_address_1">Address <span class="required">*</span></label>
           <input type="text" id="guardian_address_1" />
+          <div class="checkbox-field">
+            <label><input type="checkbox" id="guardian_same_address_1" /> Same address as above</label>
+          </div>
           <div class="field-error" data-error-for="guardians.1.address"></div>
         </div>
 
@@ -418,8 +440,8 @@
           </div>
           <div class="field">
             <label for="guardian_phone_1">Contact number <span class="required">*</span></label>
-            <input type="tel" id="guardian_phone_1" placeholder="+233 XX XXX XXXX" />
-            <div class="hint">+233 for Ghana</div>
+            <input type="tel" id="guardian_phone_1" placeholder="+233XXXXXXXXX" />
+            <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
             <div class="field-error" data-error-for="guardians.1.phone"></div>
           </div>
         </div>
@@ -443,7 +465,7 @@
 
       <div class="field">
         <label for="student_dob">Date of birth <span class="required">*</span></label>
-        <input type="date" id="student_dob" required />
+        <input type="text" id="student_dob" placeholder="dd/mm/yyyy" inputmode="numeric" maxlength="10" required />
         <div class="hint" id="student_age"></div>
         <div class="field-error" data-error-for="student.date_of_birth"></div>
       </div>
@@ -542,7 +564,13 @@
   const addGuardianBtn = document.getElementById("add-guardian-btn");
   const removeGuardianBtn = document.getElementById("remove-guardian-btn");
   const guardianBlock1 = document.getElementById("guardian-block-1");
+  const guardianAddress0Input = document.getElementById("guardian_address_0");
+  const guardianAddress1Input = document.getElementById("guardian_address_1");
+  const sameAddressCheckbox = document.getElementById("guardian_same_address_1");
   const targetGradeSelect = document.getElementById("student_target_grade");
+
+  const PHONE_PATTERN = /^\+\d{3}\d{9}$/;
+  const PHONE_ERROR_TEXT = "Enter a valid phone number in the format +233XXXXXXXXX (country code, then 9 digits, no spaces).";
   const vaccinationRequiredMarker = document.getElementById("vaccination-required-marker");
 
   const PRESCHOOL_GRADES = new Set([
@@ -572,6 +600,7 @@
     guardianBlock1.hidden = false;
     addGuardianBtn.hidden = true;
     guardianBlock1.querySelectorAll("input, select").forEach((el) => {
+      if (el.type === "checkbox") return;
       if (!el.classList.contains("other-input")) el.required = true;
     });
   });
@@ -583,24 +612,90 @@
       el.required = false;
       el.value = "";
     });
+    sameAddressCheckbox.checked = false;
+    guardianAddress1Input.disabled = false;
   });
 
+  function syncGuardian1Address() {
+    if (sameAddressCheckbox.checked) {
+      guardianAddress1Input.value = guardianAddress0Input.value;
+    }
+  }
+
+  sameAddressCheckbox.addEventListener("change", () => {
+    const checked = sameAddressCheckbox.checked;
+    guardianAddress1Input.disabled = checked;
+    guardianAddress1Input.required = !checked;
+    const errorEl = document.querySelector('[data-error-for="guardians.1.address"]');
+    if (checked) {
+      syncGuardian1Address();
+      if (errorEl) { errorEl.textContent = ""; errorEl.classList.remove("visible"); }
+    }
+  });
+
+  guardianAddress0Input.addEventListener("input", syncGuardian1Address);
+
+  form.addEventListener("input", (event) => {
+    if (event.target.matches('input[id^="guardian_phone_"]')) {
+      const input = event.target;
+      const index = input.id.split("_").pop();
+      const errorEl = document.querySelector(`[data-error-for="guardians.${index}.phone"]`);
+      const valid = !input.value || PHONE_PATTERN.test(input.value);
+      if (errorEl) {
+        errorEl.textContent = valid ? "" : PHONE_ERROR_TEXT;
+        errorEl.classList.toggle("visible", !valid);
+      }
+    }
+  });
+
+  // --- date of birth: dd/mm/yyyy, not the browser's locale-dependent
+  // native <input type="date"> rendering — parsed here and converted to
+  // ISO (yyyy-mm-dd) only when building the API payload.
+  function maskDateInput(raw) {
+    const digits = raw.replace(/\D/g, "").slice(0, 8);
+    const parts = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 8)].filter(Boolean);
+    return parts.join("/");
+  }
+
+  function parseDMY(str) {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((str || "").trim());
+    if (!m) return null;
+    const [, dd, mm, yyyy] = m;
+    const day = parseInt(dd, 10), month = parseInt(mm, 10), year = parseInt(yyyy, 10);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+    return { iso: `${yyyy}-${mm}-${dd}`, date };
+  }
+
   // --- age display ---
-  function computeAge(dobStr) {
-    if (!dobStr) return null;
-    const dob = new Date(dobStr);
-    if (isNaN(dob.getTime())) return null;
+  function computeAge(parsed) {
+    if (!parsed) return null;
     const today = new Date();
-    let age = today.getFullYear() - dob.getFullYear();
-    const m = today.getMonth() - dob.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+    const dob = parsed.date;
+    let age = today.getUTCFullYear() - dob.getUTCFullYear();
+    const m = today.getUTCMonth() - dob.getUTCMonth();
+    if (m < 0 || (m === 0 && today.getUTCDate() < dob.getUTCDate())) age--;
     return age >= 0 ? age : null;
   }
 
   document.getElementById("student_dob").addEventListener("input", (event) => {
-    const age = computeAge(event.target.value);
+    const input = event.target;
+    const caretAtEnd = input.selectionStart === input.value.length;
+    input.value = maskDateInput(input.value);
+    if (caretAtEnd) input.setSelectionRange(input.value.length, input.value.length);
+
+    const errorEl = document.querySelector('[data-error-for="student.date_of_birth"]');
+    const parsed = parseDMY(input.value);
+    const age = computeAge(parsed);
     document.getElementById("student_age").textContent =
       age !== null ? `Age: ${age} year${age === 1 ? "" : "s"}` : "";
+    if (input.value && !parsed) {
+      if (errorEl) { errorEl.textContent = "Enter a valid date as dd/mm/yyyy."; errorEl.classList.add("visible"); }
+    } else if (errorEl) {
+      errorEl.textContent = "";
+      errorEl.classList.remove("visible");
+    }
   });
 
   // --- "Other" toggles ---
@@ -704,9 +799,11 @@
     const guardians = [collectGuardianData(0)];
     if (!guardianBlock1.hidden) guardians.push(collectGuardianData(1));
 
+    const dobRaw = document.getElementById("student_dob").value;
+    const dobParsed = parseDMY(dobRaw);
     const student = {
       full_name: document.getElementById("student_full_name").value.trim(),
-      date_of_birth: document.getElementById("student_dob").value,
+      date_of_birth: dobParsed ? dobParsed.iso : dobRaw,
       current_school: document.getElementById("student_current_school").value.trim(),
       current_grade: resolveSelectValue(document.getElementById("student_current_grade")),
       year_group_applied_for: resolveSelectValue(targetGradeSelect),
@@ -735,6 +832,7 @@
   function showMessage(text, type) {
     messageBox.textContent = text;
     messageBox.className = `message visible ${type}`;
+    messageBox.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function showFieldErrors(errors, prefix, globalErrors) {

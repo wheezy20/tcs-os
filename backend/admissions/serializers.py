@@ -1,3 +1,4 @@
+from django.core.validators import RegexValidator
 from rest_framework import serializers
 from .models import Family, Guardian, Student, Application, Document
 
@@ -10,6 +11,14 @@ PRESCHOOL_GRADES = {"Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "
 APPLICATION_DOCUMENT_TYPES = {"proof_of_vaccination", "financial_clearance", "previous_report"}
 _APPLICATION_DOCUMENT_CHOICES = [c for c in Document.TYPE_CHOICES if c[0] in APPLICATION_DOCUMENT_TYPES]
 
+# "+" + 3-digit country code + exactly 9 digits, e.g. +233551794822. Matches
+# the frontend's client-side check (index.html/application.html) — kept here
+# too since the frontend check is only ever a convenience, not the guarantee.
+phone_validator = RegexValidator(
+    regex=r"^\+\d{3}\d{9}$",
+    message="Enter a valid phone number, e.g. +233551794822 (country code, then 9 digits, no spaces).",
+)
+
 
 class InquiryGuardianSerializer(serializers.Serializer):
     surname = serializers.CharField(max_length=255)
@@ -18,7 +27,7 @@ class InquiryGuardianSerializer(serializers.Serializer):
     religion = serializers.CharField(max_length=255)
     address = serializers.CharField(max_length=255)
     town_city = serializers.CharField(max_length=255)
-    phone = serializers.CharField(max_length=32)
+    phone = serializers.CharField(max_length=32, validators=[phone_validator])
     email = serializers.EmailField()
 
 

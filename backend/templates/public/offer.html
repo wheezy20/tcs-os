@@ -177,6 +177,7 @@
   function showMessage(text, type) {
     messageBox.textContent = text;
     messageBox.className = `message visible ${type}`;
+    messageBox.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   if (!token) {

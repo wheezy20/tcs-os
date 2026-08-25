@@ -126,7 +126,21 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 
 # Django REST Framework — sensible defaults for Phase 1.
 # Public endpoints (like /api/admissions/inquiries/) override permissions per-view.
+#
+# DEFAULT_AUTHENTICATION_CLASSES is deliberately empty: every DRF view in this
+# project is AllowAny (Django admin, a separate surface, handles all
+# authenticated work). Leaving DRF's own default (SessionAuthentication) in
+# place caused a real production bug — SessionAuthentication only enforces
+# CSRF when request.user is an *authenticated* user, which happens whenever
+# the same browser also has a logged-in admin session (cookies are
+# domain-wide, not path-scoped) — e.g. staff testing the public form in one
+# tab while logged into /admin/ in another. The public forms' plain fetch()
+# calls were never built to send a CSRF token, since the endpoints are meant
+# to be anonymous, so that combination 403'd with "CSRF cookie not set" for
+# real staff testing the real form, root-caused via a local repro (an
+# authenticated Client got 403, an anonymous one got the correct 400).
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
