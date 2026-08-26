@@ -108,6 +108,37 @@ a signed read URL is minted fresh on demand each time admin renders a document
 link (`admissions/storage.py:create_read_url`), rather than generated once and
 stored, which would also eventually expire silently.
 
+### Upload constraints — type/size, enforced at three layers (2026-08-26)
+
+Allowed types: PDF, JPG/JPEG, PNG (`admissions/storage.py:ALLOWED_UPLOAD_EXTENSIONS`
+/ `EXTENSION_MIME_TYPES`). HEIC was considered (iPhones default to it) and
+deliberately excluded — Safari renders it but most other browsers don't, so a
+staff member reviewing documents in admin could hit an unviewable file.
+Revisit if parents actually run into this. Max size: `MAX_UPLOAD_SIZE_MB`
+(default 10MB).
+
+Enforced in increasing order of trust, since the earlier layers can be
+bypassed by a client that doesn't run the app's own JS:
+1. **Browser** — `application.html`'s `handleFileSelected` checks extension
+   and `file.size` before even calling `/upload-url/`. Instant feedback,
+   trivially bypassed (not real security).
+2. **`UploadURLRequestSerializer`** — rejects a bad `filename` extension or a
+   `file_size` over the limit before a signed URL is even minted. Still
+   trusts the client-declared `file_size`, so a lying client could request a
+   URL for a "small" file and then PUT a large one.
+3. **The Supabase bucket itself** (`file_size_limit` / `allowed_mime_types`,
+   set via `manage.py configure_storage_bucket` → `storage.configure_bucket_limits()`)
+   — checks the real bytes/Content-Type on the actual `PUT`, so it's the only
+   layer that can't be bypassed this way. Confirmed empirically: a signed URL
+   requested with a fake small `file_size` still gets a real `413
+   EntityTooLarge` from Supabase when an 11MB file is actually PUT, and a PUT
+   with `Content-Type: application/x-msdownload` gets a real `415
+   InvalidMimeType` — independent of what the app itself checked.
+
+`configure_storage_bucket` is not run automatically on deploy; it must be run
+once per environment (and again if `MAX_UPLOAD_SIZE_MB` or the allowed
+extensions change) — see `docs/deployment.md`.
+
 ### Email notifications
 
 One parent confirmation + one internal staff alert per submission event (not

@@ -233,6 +233,15 @@ SUPABASE_URL = env("SUPABASE_URL", default="")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", default="")
 SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-documents")
 
+# Enforced in three places, in increasing order of trust: the browser (instant
+# feedback, trivially bypassed), UploadURLRequestSerializer (rejects a bad
+# request before a signed URL is even minted, but trusts the client-declared
+# file_size), and the Supabase bucket's own file_size_limit/allowed_mime_types
+# (set via `manage.py configure_storage_bucket` — see admissions/storage.py) —
+# the only layer that checks the real bytes on the actual PUT, so it can't be
+# bypassed by a client lying in the JSON request.
+MAX_UPLOAD_SIZE_MB = env.int("MAX_UPLOAD_SIZE_MB", default=10)
+
 # Phase 3 — offers. No scheduler exists in this project yet (no Celery, no cron,
 # nothing deployed at all), so expiry is resolved lazily on read rather than by a
 # timed job — see Offer.refresh_expiry() in admissions/models.py.

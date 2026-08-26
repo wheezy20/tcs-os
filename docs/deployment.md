@@ -108,6 +108,26 @@ gcloud run jobs execute admissions-migrate --region=$REGION --wait
 
 Re-run `gcloud run jobs execute admissions-migrate --region=$REGION --wait` after any future deploy that includes new migrations — it's not automatic.
 
+### 5b. Configure the Storage bucket's upload limits (one-off, re-run if limits change)
+
+Same Cloud Run Jobs pattern, this time calling `manage.py configure_storage_bucket` — it pushes `MAX_UPLOAD_SIZE_MB` and the allowed document MIME types (PDF/JPG/PNG) onto the `admissions-documents` bucket itself via the Supabase Storage API, so oversized/disallowed uploads are rejected server-side even if a client bypasses the app's own checks (see `docs/admissions/02-stack-and-schema.md` → "Upload constraints"). Needs the Supabase secrets, not the database ones:
+
+```
+gcloud run jobs create admissions-configure-storage \
+  --image=$IMAGE \
+  --region=$REGION \
+  --service-account=$RUNNER_SA \
+  --set-env-vars="SUPABASE_URL=https://your-project.supabase.co" \
+  --set-env-vars="SUPABASE_STORAGE_BUCKET=admissions-documents" \
+  --set-secrets="SECRET_KEY=admissions-secret-key:latest,DATABASE_URL=admissions-database-url:latest,SUPABASE_SERVICE_ROLE_KEY=admissions-supabase-key:latest" \
+  --command="python" \
+  --args="manage.py,configure_storage_bucket"
+
+gcloud run jobs execute admissions-configure-storage --region=$REGION --wait
+```
+
+Re-run this any time `MAX_UPLOAD_SIZE_MB` or the allowed extensions change — it's not automatic and not part of the regular deploy. (If you set `MAX_UPLOAD_SIZE_MB` to something other than the 10MB default, add `--set-env-vars="MAX_UPLOAD_SIZE_MB=..."` here too.)
+
 ## 6. Verify a sending domain in Resend
 
 Emails will silently fail (or get rejected by Resend) until `tcsch.edu.gh` —

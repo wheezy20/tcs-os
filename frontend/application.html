@@ -873,26 +873,27 @@
     <div class="form-step" data-step="4" hidden>
       <fieldset>
         <legend><span class="section-number">5.</span>Documents &amp; Payment</legend>
+        <div class="hint">Accepted file types: PDF, JPG, PNG. Maximum size: 10MB per file.</div>
 
         <div class="document-field" id="doc-field-proof_of_vaccination">
           <label for="doc-input-proof_of_vaccination">
             Proof of vaccination <span class="required" id="vaccination-required-marker" hidden>*</span>
           </label>
           <div class="hint" id="vaccination-hint">Required for applicants to preschool grades (Pre Nursery through Kindergarten 2).</div>
-          <input type="file" id="doc-input-proof_of_vaccination" data-document-type="proof_of_vaccination" />
+          <input type="file" id="doc-input-proof_of_vaccination" data-document-type="proof_of_vaccination" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
           <div class="upload-status" id="doc-status-proof_of_vaccination"></div>
           <div class="field-error" data-error-for="documents"></div>
         </div>
 
         <div class="document-field" id="doc-field-financial_clearance">
           <label for="doc-input-financial_clearance">Proof of financial clearance from previous school</label>
-          <input type="file" id="doc-input-financial_clearance" data-document-type="financial_clearance" />
+          <input type="file" id="doc-input-financial_clearance" data-document-type="financial_clearance" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
           <div class="upload-status" id="doc-status-financial_clearance"></div>
         </div>
 
         <div class="document-field" id="doc-field-previous_report">
           <label for="doc-input-previous_report">Report card / transcript from previous school</label>
-          <input type="file" id="doc-input-previous_report" data-document-type="previous_report" />
+          <input type="file" id="doc-input-previous_report" data-document-type="previous_report" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
           <div class="upload-status" id="doc-status-previous_report"></div>
         </div>
 
@@ -909,7 +910,7 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
 
         <div class="document-field" id="doc-field-application_fee_proof">
           <label for="doc-input-application_fee_proof">Proof of application fee payment <span class="required">*</span></label>
-          <input type="file" id="doc-input-application_fee_proof" data-document-type="application_fee_proof" required />
+          <input type="file" id="doc-input-application_fee_proof" data-document-type="application_fee_proof" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" required />
           <div class="upload-status" id="doc-status-application_fee_proof"></div>
         </div>
 
@@ -1361,6 +1362,13 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   const uploadedDocuments = {}; // document_type -> file_path
   let pendingUploads = 0;
 
+  // Kept in sync with backend/admissions/storage.py ALLOWED_UPLOAD_EXTENSIONS
+  // and settings.MAX_UPLOAD_SIZE_MB. This is a fast-fail UX convenience, not
+  // the real security boundary — the server validates independently, and the
+  // Supabase bucket itself enforces the size/type limit on the actual bytes.
+  const ALLOWED_UPLOAD_EXTENSIONS = ["pdf", "jpg", "jpeg", "png"];
+  const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+
   async function handleFileSelected(event) {
     const input = event.target;
     const documentType = input.dataset.documentType;
@@ -1374,6 +1382,20 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       return;
     }
 
+    const extension = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
+    if (!ALLOWED_UPLOAD_EXTENSIONS.includes(extension)) {
+      statusEl.textContent = "Unsupported file type. Please upload a PDF, JPG, or PNG.";
+      statusEl.className = "upload-status failed";
+      input.value = "";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+      statusEl.textContent = "File is too large. Maximum size is 10MB.";
+      statusEl.className = "upload-status failed";
+      input.value = "";
+      return;
+    }
+
     statusEl.textContent = "Uploading…";
     statusEl.className = "upload-status uploading";
     pendingUploads++;
@@ -1382,9 +1404,13 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       const urlResp = await fetch(`${API_BASE}/upload-url/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ document_type: documentType, filename: file.name }),
+        body: JSON.stringify({ document_type: documentType, filename: file.name, file_size: file.size }),
       });
-      if (!urlResp.ok) throw new Error("Could not prepare upload");
+      if (!urlResp.ok) {
+        const errBody = await urlResp.json().catch(() => ({}));
+        const message = errBody.filename?.[0] || errBody.file_size?.[0] || errBody.detail || "Could not prepare upload.";
+        throw new Error(message);
+      }
       const { upload_url, file_path } = await urlResp.json();
 
       const putResp = await fetch(upload_url, {
@@ -1392,13 +1418,13 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       });
-      if (!putResp.ok) throw new Error("Upload failed");
+      if (!putResp.ok) throw new Error("Upload failed — the file may be too large or an unsupported type.");
 
       uploadedDocuments[documentType] = file_path;
       statusEl.textContent = `Uploaded: ${file.name}`;
       statusEl.className = "upload-status done";
     } catch (err) {
-      statusEl.textContent = "Upload failed — please try again.";
+      statusEl.textContent = err.message || "Upload failed — please try again.";
       statusEl.className = "upload-status failed";
       input.value = "";
     } finally {

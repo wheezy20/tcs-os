@@ -21,6 +21,20 @@ READ_URL_EXPIRES_IN = 60 * 5  # 5 minutes — minted fresh per admin page view, 
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Covers report cards, vaccination/financial-clearance letters, and payment
+# receipts — all normally scanned/photographed to PDF or JPG/PNG. Deliberately
+# excludes HEIC (default format for recent iPhone photos): Safari can render
+# it but most other browsers can't, so a staff member reviewing documents in
+# admin could easily hit an unviewable file. Revisit if this becomes a real
+# complaint from parents submitting iPhone photos.
+ALLOWED_UPLOAD_EXTENSIONS = {"pdf", "jpg", "jpeg", "png"}
+EXTENSION_MIME_TYPES = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+}
+
 
 class SupabaseStorageError(Exception):
     pass
@@ -67,6 +81,25 @@ def create_upload_target(document_type, filename):
     result = _request("POST", f"/object/upload/sign/{bucket}/{storage_path}")
     upload_url = f"{settings.SUPABASE_URL}/storage/v1{result['url']}"
     return storage_path, upload_url
+
+
+def configure_bucket_limits():
+    """Push MAX_UPLOAD_SIZE_MB and the allowed MIME types down onto the bucket
+    itself, so Supabase Storage rejects an oversized/disallowed PUT even if a
+    client bypasses UploadURLRequestSerializer's checks (e.g. by lying about
+    file_size when requesting the signed URL). Idempotent — safe to re-run
+    any time the allow-list or size limit changes. Not called automatically;
+    run `manage.py configure_storage_bucket` after changing either setting.
+    """
+    bucket = settings.SUPABASE_STORAGE_BUCKET
+    size_limit = f"{settings.MAX_UPLOAD_SIZE_MB}MB"
+    mime_types = sorted(set(EXTENSION_MIME_TYPES.values()))
+    _request(
+        "PUT",
+        f"/bucket/{bucket}",
+        {"file_size_limit": size_limit, "allowed_mime_types": mime_types},
+    )
+    return size_limit, mime_types
 
 
 def create_read_url(storage_path):

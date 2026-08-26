@@ -1,9 +1,13 @@
+from django.conf import settings
 from django.core.validators import RegexValidator
 from django.utils import timezone
 from rest_framework import serializers
 from .models import (
     Campus, EmergencyContact, Family, Guardian, HealthInfo, Student, Application, Document,
 )
+from .storage import ALLOWED_UPLOAD_EXTENSIONS
+
+MAX_UPLOAD_SIZE_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 # Grades where TCS requires proof of vaccination on a formal Application.
 # Checked against the grade being applied for, not the child's current grade.
@@ -367,10 +371,30 @@ class ApplicationSerializer(serializers.Serializer):
 class UploadURLRequestSerializer(serializers.Serializer):
     """POST /api/admissions/upload-url/ — mints a signed Supabase Storage
     upload URL for one document. document_type is restricted to the types
-    actually collected on the Application form."""
+    actually collected on the Application form.
+
+    file_size is client-declared, so this is a fast-fail convenience, not the
+    real security boundary — a client could lie here. The bucket's own
+    file_size_limit (set via `manage.py configure_storage_bucket`) is what
+    actually rejects an oversized PUT, since it checks the real bytes."""
 
     document_type = serializers.ChoiceField(choices=_APPLICATION_DOCUMENT_CHOICES)
     filename = serializers.CharField(max_length=255)
+    file_size = serializers.IntegerField(min_value=1)
+
+    def validate_filename(self, value):
+        extension = value.rsplit(".", 1)[-1].lower() if "." in value else ""
+        if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+            allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+            raise serializers.ValidationError(f"Unsupported file type. Allowed types: {allowed}.")
+        return value
+
+    def validate_file_size(self, value):
+        if value > MAX_UPLOAD_SIZE_BYTES:
+            raise serializers.ValidationError(
+                f"File is too large. Maximum size is {settings.MAX_UPLOAD_SIZE_MB}MB."
+            )
+        return value
 
 
 class ApplicationDraftSaveSerializer(serializers.Serializer):
