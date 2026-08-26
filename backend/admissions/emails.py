@@ -108,6 +108,7 @@ def send_application_emails(application):
             f"({application.year_group_applied_for}, {application.academic_year}). "
             "Our admissions team has received your documents and will review your "
             f"application soon.\n\nYour reference number: {application.application_reference}\n\n"
+            f"{settings.APPLICATION_FEE_PAYMENT_INSTRUCTIONS}\n\n"
             "— TCS Admissions"
         ),
         recipient=guardian.email,
@@ -128,6 +129,32 @@ def send_application_emails(application):
             f"Application #{application.pk} in Django admin."
         ),
         recipient=_staff_email(),
+    )
+
+
+def send_draft_resume_email(draft):
+    """Sent on explicit request (a "save for later" action on the multi-step
+    Application form), not on every autosave — an email per keystroke-level
+    save would spam the parent's inbox. Same token-is-the-access-control
+    trust model as Offer's resume link; see ApplicationDraft's docstring."""
+    if not draft.email:
+        return
+
+    link = f"{settings.FRONTEND_BASE_URL}/apply?draft_token={draft.token}"
+    expiry_note = (
+        f"This saved application expires on {draft.expires_at:%d %B %Y}."
+        if draft.expires_at else ""
+    )
+
+    _send(
+        subject="Resume your TCS application",
+        message=(
+            "You saved your progress on a TCS application. Continue here whenever "
+            f"you're ready: {link}\n\n"
+            f"{expiry_note}\n\n"
+            "— TCS Admissions"
+        ),
+        recipient=draft.email,
     )
 
 

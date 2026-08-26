@@ -40,6 +40,8 @@ Marketing / Referral → Enquiry → Prospective Student Profile → Application
 
 CRM & lead management · Prospective family management · Application management · Dynamic application forms · Workflow engine · Checklists · Document management · Assessments · Interviews · School tours/open days · Admissions review (with rubrics) · Multi-stage review · Decisions · Waitlist · Capacity management · Offer & admission management · Enrolment · Parent portal · Communications & automation · Admissions payments (feeds central TCS finance, doesn't own its own ledger) · Re-enrolment · Marketing/campaign attribution · Admissions analytics · AI conversational analytics · RBAC · Multi-campus · Import/export · Duplicate detection · Audit & compliance · Alumni/advancement
 
+**Parent portal — known gap, not yet built.** Phase 5's multi-step Application form added a token-based save/resume mechanism (`ApplicationDraft`, same trust model as the existing Offer accept/decline link — an unguessable token, no login) so a parent can pause and come back later. That's an explicit stopgap for not having a real parent portal, not a substitute for one — no authentication, no way for a parent to see their family's full history across Inquiry/Application/Offer in one place, no password reset flow, nothing that survives losing the email. Build a real parent portal when this module actually needs one of those properties.
+
 ## Key business rules to preserve regardless of phase
 
 - An application cannot be submitted with required fields incomplete.

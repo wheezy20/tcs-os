@@ -5,9 +5,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import emails, storage
-from .models import Offer
+from .models import ApplicationDraft, Offer
 from .serializers import (
-    ApplicationSerializer, InquirySerializer, OfferResponseSerializer, UploadURLRequestSerializer,
+    ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
+    OfferResponseSerializer, UploadURLRequestSerializer,
 )
 
 
@@ -58,6 +59,111 @@ class UploadURLView(APIView):
             )
 
         return Response({"upload_url": upload_url, "file_path": storage_path})
+
+
+class ApplicationDraftView(APIView):
+    """POST /api/admissions/application-drafts/ — public endpoint, save the
+    first bit of progress on the multi-step Application form and get back a
+    token. Same trust model as everywhere else in this system: the token
+    itself is the access control, no parent login exists. See
+    ApplicationDraft's own docstring for why raw JSON is stored rather than
+    partial real rows."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = ApplicationDraftSaveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        draft = ApplicationDraft.objects.create(**serializer.validated_data)
+
+        if request.data.get("send_email"):
+            emails.send_draft_resume_email(draft)
+
+        return Response(
+            {"token": draft.token, "current_step": draft.current_step},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ApplicationDraftDetailView(APIView):
+    """GET .../<token>/ — resume: fetch saved progress to repopulate the form.
+    PATCH .../<token>/ — save progress against an existing draft (autosave
+    between steps, or an explicit "save for later" click)."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token):
+        draft = get_object_or_404(ApplicationDraft, token=token)
+        if draft.is_submitted:
+            return Response(
+                {"detail": "This application has already been submitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if draft.is_expired:
+            return Response(
+                {"detail": "This saved application has expired. Please start a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({
+            "email": draft.email,
+            "data": draft.data,
+            "current_step": draft.current_step,
+        })
+
+    def patch(self, request, token):
+        draft = get_object_or_404(ApplicationDraft, token=token)
+        if draft.is_submitted:
+            return Response(
+                {"detail": "This application has already been submitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if draft.is_expired:
+            return Response(
+                {"detail": "This saved application has expired. Please start a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = ApplicationDraftSaveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        for field, value in serializer.validated_data.items():
+            setattr(draft, field, value)
+        draft.save()
+
+        if request.data.get("send_email"):
+            emails.send_draft_resume_email(draft)
+
+        return Response({"token": draft.token, "current_step": draft.current_step})
+
+
+class ApplicationDraftSubmitView(APIView):
+    """POST .../<token>/submit/ — final submission. Runs the whole assembled
+    draft through the real ApplicationSerializer (the one and only place
+    "valid" is defined), same as a direct POST to /applications/ would be."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, token):
+        draft = get_object_or_404(ApplicationDraft, token=token)
+        if draft.is_submitted:
+            return Response(
+                {"detail": "This application has already been submitted.",
+                 "application_id": draft.submitted_application_id},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if draft.is_expired:
+            return Response(
+                {"detail": "This saved application has expired. Please start a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = ApplicationSerializer(data=draft.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        application = serializer.save()
+        emails.send_application_emails(application)
+
+        draft.submitted_application = application
+        draft.save(update_fields=["submitted_application"])
+
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class OfferRespondView(APIView):

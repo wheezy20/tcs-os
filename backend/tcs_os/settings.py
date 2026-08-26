@@ -247,3 +247,33 @@ FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:8000")
 # admissions/emails.py.
 ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "admissions" / "attachments"))
 INQUIRY_EMAIL_ATTACHMENTS = env.list("INQUIRY_EMAIL_ATTACHMENTS", default=[])
+
+# Phase 5 — expanded Application form.
+#
+# No scheduler exists in this project (see OFFER_EXPIRY_DAYS above) — draft
+# expiry is resolved lazily the same way, via ApplicationDraft.is_expired.
+# Longer than OFFER_EXPIRY_DAYS since gathering documents can genuinely take
+# a parent weeks, not days.
+DRAFT_EXPIRY_DAYS = env.int("DRAFT_EXPIRY_DAYS", default=30)
+
+# Shown in the Documents & Payment step of the Application form and included
+# in the application-submitted confirmation email. Env-var-driven so the
+# real bank/mobile-money details can be updated without a code change.
+APPLICATION_FEE_PAYMENT_INSTRUCTIONS = env(
+    "APPLICATION_FEE_PAYMENT_INSTRUCTIONS",
+    default=(
+        "Once your application form is received and reviewed, you will be notified via "
+        "e-mail regarding an admission decision after due process. Submission of an "
+        "application form and payment of the application fee does NOT mean admission "
+        "has been granted.\n\n"
+        "ACCOUNT DETAILS:\n"
+        "Consolidated Bank Ghana\n"
+        "Account No: 0383011100001\n"
+        "Name: Treasures Christian School\n\n"
+        "PAYMENT PROCESS:\n"
+        "Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 "
+        "(Bank account) → Option 1 (Wallet to bank account) → # for next → "
+        "Option 16 (CBG) → Enter account number 0383011100001 → Enter amount "
+        "GHS 200.00 → Enter Reference: name of the learner"
+    ),
+)

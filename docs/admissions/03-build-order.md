@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: Phase 4.5 — deployment prep, in progress**
+**Current phase: Phase 5 — expanded Application form, in progress**
 
 ---
 
@@ -87,7 +87,7 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 
 **A real deployment risk caught and avoided, not just discovered after the fact:** the plan was to point Django's `STATICFILES_DIRS` at the existing `frontend/assets/` directory to avoid duplicating the logo files. Caught before implementing: the Dockerfile's `collectstatic` runs at build time inside a `backend/`-scoped build context, which may not include the sibling `frontend/` directory depending on how the image is built — a `STATICFILES_DIRS` entry pointing outside that context would silently work in dev and break on first real deploy. Copied the 6 logo files into `admissions/static/admissions/branding/` instead (Django's standard per-app static convention, guaranteed inside the build context) — at the cost of the assets existing in two places (`frontend/assets/branding/` for the standalone HTML forms, `backend/admissions/static/admissions/branding/` for Django) that need manual sync if the brand assets are ever updated.
 
-## Phase 4.5 — Deployment prep — in progress (2026-08-19)
+## Phase 4.5 — Deployment prep — DONE (2026-08-19)
 
 Closes out the "still not done" item flagged back in Phase 1 (Cloudflare, real subdomain) — this is that go-live work, not new admissions functionality.
 
@@ -100,10 +100,28 @@ Closes out the "still not done" item flagged back in Phase 1 (Cloudflare, real s
 
 **Not done here, deliberately out of scope:** Turnstile on the forms, the Cloudflare rate-limit rule on `/api/admissions/*` — both flagged as open since Phase 1, still open.
 
-## Phase 5 — CRM & marketing layer
+## Phase 5 — Expanded Application form — in progress (2026-08-26)
+
+Brings the Application form up to the school's real paper/Google Forms process — full plan reviewed and approved before any code was written (schema, draft/resume design, and the Campus×Capacity question all put to the user explicitly; see `04-build-log.md` for the resolutions).
+
+**What shipped:**
+- `Student`: gender, nationality, its own address block (address/town_city/postal_code/country — previously only Guardian had one), previous_school_location (distinct from `current_school`, which is the school's name)
+- New `Campus` model (Main, Annex — seeded via data migration) and new `EmergencyContact`/`HealthInfo` models, both Application-scoped (not Student- or Family-scoped) so they sit as inlines on the same `ApplicationAdmin` page as everything else
+- `HealthInfo` access restricted behind a new `admissions.can_view_health_info` permission — real child health data, not visible to every Admissions Officer by default (nobody has this permission yet; granting it to a role is a deliberate decision left to the user, not auto-assigned)
+- `Capacity` now scoped by campus too (`academic_year`, `year_group`, `campus`) — TCS's two campuses are physically separate seat pools; verified independently (a Main grade hitting its own cap doesn't warn against Annex's separate cap for the same grade/year)
+- Annex campus grade restriction (Pre Nursery/Nursery 1 only) enforced the same way the existing preschool-vaccination rule already is — a hardcoded grade set checked in `ApplicationSerializer.validate()`, not a new pattern
+- Application fee (GHS 200, offline bank transfer/mobile money): reuses the existing `Document` model entirely — a new `application_fee_proof` type, same upload/review workflow as every other document. Payment instructions are an env-var-driven setting (`APPLICATION_FEE_PAYMENT_INSTRUCTIONS`), included in the confirmation email; the on-page copy is static HTML (this project's forms are dependency-free by design), so updating bank details later means editing both places
+- Declaration: two independent consents, not one — `declaration_agreed` (indemnity/data-protection/accuracy, required) and `media_consent_agreed` (separate, optional, independently revocable per its own text) — plus a lightweight audit trail (`declaration_agreed_at`, `declaration_ip_address`, best-effort per REMOTE_ADDR's own caveats behind a proxy)
+- `ApplicationDraft` — token-based save/resume, same trust model and token generator as `Offer`'s existing resume link. Raw JSON, not partial real rows (a draft can be genuinely incomplete/invalid at any point); full validation only ever happens once, at final submit, through the same `ApplicationSerializer` a direct submission uses
+- `application.html` rebuilt as a 6-step form (Guardian(s) → Student → Emergency Contact → Health/Wellbeing → Documents & Payment → Declaration) with a progress bar, autosaving to the draft on every "Next," and an explicit "Save & finish later" action that emails a resume link — separate from autosave so it doesn't spam an inbox
+- Tested end-to-end for real, not by inspection: a full 6-step submission through the actual browser (including two real Supabase document uploads) verified correct in the database afterward; a separate save-for-later → real resend email → resume-on-a-fresh-page test confirmed all fields (including the reverse dd/mm/yyyy conversion) restore correctly; server-side rejection confirmed for Annex+wrong-grade, an unknown campus name, and a missing declaration; the health-info permission gate confirmed both ways in the real admin UI, not just by code reading
+
+**Not done here, deliberately out of scope:** a real payment portal (stays offline/proof-upload until one exists) and a real parent login/portal — the draft token is an explicit stopgap for the latter, flagged in `01-vision.md`, not a replacement for one.
+
+## Phase 6 — CRM & marketing layer
 - Enquiries before application (lead capture even without a full application)
 - Lead source tracking
 - Newsletter/bulk communication tooling (ties into the branded email TCS already wants for the Preschool–JHS admissions announcement)
 
-## Phase 6+ — Everything else in 01-vision.md
-Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics, multi-campus. Revisit `01-vision.md` when you get here, don't pre-build models for these now.
+## Phase 7+ — Everything else in 01-vision.md
+Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics. Multi-campus removed from this list — Phase 5 built it. Revisit `01-vision.md` when you get here, don't pre-build models for these now.

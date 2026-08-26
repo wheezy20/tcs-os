@@ -71,6 +71,33 @@
     text-align: center;
   }
 
+  /* --- progress bar --- */
+  .progress-wrap {
+    margin-bottom: 1.25rem;
+  }
+
+  .progress-label {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+    text-align: center;
+  }
+
+  .progress-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
   form {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -81,11 +108,7 @@
   fieldset {
     border: none;
     padding: 0;
-    margin: 0 0 2rem 0;
-  }
-
-  fieldset:last-of-type {
-    margin-bottom: 0;
+    margin: 0;
   }
 
   legend {
@@ -167,6 +190,11 @@
     font-family: inherit;
   }
 
+  textarea {
+    min-height: 5rem;
+    resize: vertical;
+  }
+
   input:focus, select:focus, textarea:focus {
     outline: none;
     border-color: var(--primary);
@@ -183,6 +211,10 @@
     margin-top: 0.3rem;
   }
 
+  .hint a {
+    color: var(--primary);
+  }
+
   .checkbox-field {
     display: flex;
     align-items: center;
@@ -197,9 +229,42 @@
     margin: 0;
   }
 
+  .checkbox-field.standalone {
+    margin-top: 0;
+    align-items: flex-start;
+  }
+
+  .checkbox-field.standalone input[type="checkbox"] {
+    margin-top: 0.2rem;
+    flex-shrink: 0;
+  }
+
   input:disabled {
     background: var(--bg);
     color: var(--text-muted);
+  }
+
+  .radio-group {
+    display: flex;
+    gap: 1.25rem;
+  }
+
+  .radio-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+    font-weight: 400;
+    margin-bottom: 0;
+    cursor: pointer;
+  }
+
+  .radio-option input[type="radio"] {
+    width: auto;
+  }
+
+  .radio-group + textarea {
+    margin-top: 0.75rem;
   }
 
   .link-btn {
@@ -247,26 +312,98 @@
   .upload-status.done { color: var(--success); }
   .upload-status.failed { color: var(--error); }
 
-  button[type="submit"] {
-    width: 100%;
+  .payment-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .declaration-text {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    background: var(--bg);
+  }
+
+  .declaration-text h4 {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--primary);
+    margin: 1.1rem 0 0.4rem 0;
+  }
+
+  .declaration-text h4:first-child {
+    margin-top: 0;
+  }
+
+  .declaration-text p {
+    margin: 0 0 0.75rem 0;
+  }
+
+  .declaration-text p:last-child {
+    margin-bottom: 0;
+  }
+
+  .declaration-text .verse {
+    font-style: italic;
+    color: var(--text-muted);
+  }
+
+  .step-nav {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.75rem;
+  }
+
+  .nav-btn {
+    flex: 1;
     padding: 0.75rem 1rem;
     font-family: inherit;
     font-size: 1rem;
     font-weight: 600;
-    color: #fff;
-    background: var(--primary);
-    border: none;
     border-radius: 6px;
     cursor: pointer;
+    border: none;
   }
 
-  button[type="submit"]:hover:not(:disabled) {
+  .nav-btn.primary {
+    color: #fff;
+    background: var(--primary);
+  }
+
+  .nav-btn.primary:hover:not(:disabled) {
     background: var(--primary-hover);
   }
 
-  button[type="submit"]:disabled {
+  .nav-btn.primary:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .nav-btn.secondary {
+    background: #fff;
+    border: 1px solid var(--border);
+    color: var(--text);
+    flex: 0 0 auto;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+
+  .save-later-row {
+    text-align: center;
+    margin-top: 1rem;
   }
 
   .message {
@@ -294,6 +431,12 @@
     border: 1px solid #fecaca;
   }
 
+  .message.info {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
   .field-error {
     color: var(--error);
     font-size: 0.78rem;
@@ -316,250 +459,475 @@
 
   <div id="form-message" class="message" role="status" aria-live="polite"></div>
 
+  <div class="progress-wrap">
+    <div class="progress-label" id="progress-label">Step 1 of 6: Parent / Guardian information</div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+  </div>
+
   <form id="application-form" novalidate>
 
-    <fieldset>
-      <legend><span class="section-number">1.</span>Parent / Guardian information</legend>
+    <!-- Step 0: Guardian(s) -->
+    <div class="form-step" data-step="0">
+      <fieldset>
+        <legend><span class="section-number">1.</span>Parent / Guardian information</legend>
 
-      <div class="guardian-block" data-index="0">
-        <p class="block-heading">Parent / Guardian 1</p>
+        <div class="guardian-block" data-index="0">
+          <p class="block-heading">Parent / Guardian 1</p>
+
+          <div class="row">
+            <div class="field">
+              <label for="guardian_surname_0">Surname / Family name <span class="required">*</span></label>
+              <input type="text" id="guardian_surname_0" required />
+              <div class="field-error" data-error-for="guardians.0.surname"></div>
+            </div>
+            <div class="field">
+              <label for="guardian_first_name_0">First name(s) <span class="required">*</span></label>
+              <input type="text" id="guardian_first_name_0" required />
+              <div class="field-error" data-error-for="guardians.0.first_name"></div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_relationship_0">Relationship to child <span class="required">*</span></label>
+            <select id="guardian_relationship_0" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="father">Father</option>
+              <option value="mother">Mother</option>
+              <option value="guardian">Legal Guardian</option>
+              <option value="other">Other</option>
+            </select>
+            <div class="field-error" data-error-for="guardians.0.relationship"></div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_religion_0">Religion <span class="required">*</span></label>
+            <input type="text" id="guardian_religion_0" required />
+            <div class="field-error" data-error-for="guardians.0.religion"></div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_address_0">Address <span class="required">*</span></label>
+            <input type="text" id="guardian_address_0" required />
+            <div class="field-error" data-error-for="guardians.0.address"></div>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="guardian_town_city_0">Town / City <span class="required">*</span></label>
+              <input type="text" id="guardian_town_city_0" required />
+              <div class="field-error" data-error-for="guardians.0.town_city"></div>
+            </div>
+            <div class="field">
+              <label for="guardian_phone_0">Contact number <span class="required">*</span></label>
+              <input type="tel" id="guardian_phone_0" placeholder="+233XXXXXXXXX" required />
+              <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
+              <div class="field-error" data-error-for="guardians.0.phone"></div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_email_0">Active email address <span class="required">*</span></label>
+            <input type="email" id="guardian_email_0" required />
+            <div class="hint">If you already submitted an enquiry, use the same email so we can match your family's records.</div>
+            <div class="field-error" data-error-for="guardians.0.email"></div>
+          </div>
+        </div>
+
+        <button type="button" id="add-guardian-btn" class="link-btn">+ Add a second parent / guardian</button>
+
+        <div class="guardian-block" data-index="1" id="guardian-block-1" hidden>
+          <p class="block-heading">
+            Parent / Guardian 2
+            <button type="button" id="remove-guardian-btn" class="link-btn subtle">Remove</button>
+          </p>
+
+          <div class="row">
+            <div class="field">
+              <label for="guardian_surname_1">Surname / Family name <span class="required">*</span></label>
+              <input type="text" id="guardian_surname_1" />
+              <div class="field-error" data-error-for="guardians.1.surname"></div>
+            </div>
+            <div class="field">
+              <label for="guardian_first_name_1">First name(s) <span class="required">*</span></label>
+              <input type="text" id="guardian_first_name_1" />
+              <div class="field-error" data-error-for="guardians.1.first_name"></div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_relationship_1">Relationship to child <span class="required">*</span></label>
+            <select id="guardian_relationship_1">
+              <option value="" disabled selected>Select one</option>
+              <option value="father">Father</option>
+              <option value="mother">Mother</option>
+              <option value="guardian">Legal Guardian</option>
+              <option value="other">Other</option>
+            </select>
+            <div class="field-error" data-error-for="guardians.1.relationship"></div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_religion_1">Religion <span class="required">*</span></label>
+            <input type="text" id="guardian_religion_1" />
+            <div class="field-error" data-error-for="guardians.1.religion"></div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_address_1">Address <span class="required">*</span></label>
+            <input type="text" id="guardian_address_1" />
+            <div class="checkbox-field">
+              <label><input type="checkbox" id="guardian_same_address_1" /> Same address as above</label>
+            </div>
+            <div class="field-error" data-error-for="guardians.1.address"></div>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="guardian_town_city_1">Town / City <span class="required">*</span></label>
+              <input type="text" id="guardian_town_city_1" />
+              <div class="field-error" data-error-for="guardians.1.town_city"></div>
+            </div>
+            <div class="field">
+              <label for="guardian_phone_1">Contact number <span class="required">*</span></label>
+              <input type="tel" id="guardian_phone_1" placeholder="+233XXXXXXXXX" />
+              <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
+              <div class="field-error" data-error-for="guardians.1.phone"></div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="guardian_email_1">Active email address <span class="required">*</span></label>
+            <input type="email" id="guardian_email_1" />
+            <div class="field-error" data-error-for="guardians.1.email"></div>
+          </div>
+        </div>
+      </fieldset>
+    </div>
+
+    <!-- Step 1: Student -->
+    <div class="form-step" data-step="1" hidden>
+      <fieldset>
+        <legend><span class="section-number">2.</span>Student information</legend>
+
+        <div class="field">
+          <label for="student_full_name">Full name <span class="required">*</span></label>
+          <input type="text" id="student_full_name" required />
+          <div class="field-error" data-error-for="student.full_name"></div>
+        </div>
 
         <div class="row">
           <div class="field">
-            <label for="guardian_surname_0">Surname / Family name <span class="required">*</span></label>
-            <input type="text" id="guardian_surname_0" required />
-            <div class="field-error" data-error-for="guardians.0.surname"></div>
+            <label for="student_dob">Date of birth <span class="required">*</span></label>
+            <input type="text" id="student_dob" placeholder="dd/mm/yyyy" inputmode="numeric" maxlength="10" required />
+            <div class="hint" id="student_age"></div>
+            <div class="field-error" data-error-for="student.date_of_birth"></div>
           </div>
           <div class="field">
-            <label for="guardian_first_name_0">First name(s) <span class="required">*</span></label>
-            <input type="text" id="guardian_first_name_0" required />
-            <div class="field-error" data-error-for="guardians.0.first_name"></div>
+            <label for="student_gender">Gender <span class="required">*</span></label>
+            <select id="student_gender" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+            </select>
+            <div class="field-error" data-error-for="student.gender"></div>
           </div>
         </div>
 
         <div class="field">
-          <label for="guardian_relationship_0">Relationship to child <span class="required">*</span></label>
-          <select id="guardian_relationship_0" required>
-            <option value="" disabled selected>Select one</option>
-            <option value="father">Father</option>
-            <option value="mother">Mother</option>
-            <option value="guardian">Legal Guardian</option>
-            <option value="other">Other</option>
-          </select>
-          <div class="field-error" data-error-for="guardians.0.relationship"></div>
+          <label for="student_nationality">Nationality <span class="required">*</span></label>
+          <input type="text" id="student_nationality" required />
+          <div class="field-error" data-error-for="student.nationality"></div>
         </div>
 
         <div class="field">
-          <label for="guardian_religion_0">Religion <span class="required">*</span></label>
-          <input type="text" id="guardian_religion_0" required />
-          <div class="field-error" data-error-for="guardians.0.religion"></div>
-        </div>
-
-        <div class="field">
-          <label for="guardian_address_0">Address <span class="required">*</span></label>
-          <input type="text" id="guardian_address_0" required />
-          <div class="field-error" data-error-for="guardians.0.address"></div>
-        </div>
-
-        <div class="row">
-          <div class="field">
-            <label for="guardian_town_city_0">Town / City <span class="required">*</span></label>
-            <input type="text" id="guardian_town_city_0" required />
-            <div class="field-error" data-error-for="guardians.0.town_city"></div>
-          </div>
-          <div class="field">
-            <label for="guardian_phone_0">Contact number <span class="required">*</span></label>
-            <input type="tel" id="guardian_phone_0" placeholder="+233XXXXXXXXX" required />
-            <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
-            <div class="field-error" data-error-for="guardians.0.phone"></div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="guardian_email_0">Active email address <span class="required">*</span></label>
-          <input type="email" id="guardian_email_0" required />
-          <div class="hint">If you already submitted an enquiry, use the same email so we can match your family's records.</div>
-          <div class="field-error" data-error-for="guardians.0.email"></div>
-        </div>
-      </div>
-
-      <button type="button" id="add-guardian-btn" class="link-btn">+ Add a second parent / guardian</button>
-
-      <div class="guardian-block" data-index="1" id="guardian-block-1" hidden>
-        <p class="block-heading">
-          Parent / Guardian 2
-          <button type="button" id="remove-guardian-btn" class="link-btn subtle">Remove</button>
-        </p>
-
-        <div class="row">
-          <div class="field">
-            <label for="guardian_surname_1">Surname / Family name <span class="required">*</span></label>
-            <input type="text" id="guardian_surname_1" />
-            <div class="field-error" data-error-for="guardians.1.surname"></div>
-          </div>
-          <div class="field">
-            <label for="guardian_first_name_1">First name(s) <span class="required">*</span></label>
-            <input type="text" id="guardian_first_name_1" />
-            <div class="field-error" data-error-for="guardians.1.first_name"></div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="guardian_relationship_1">Relationship to child <span class="required">*</span></label>
-          <select id="guardian_relationship_1">
-            <option value="" disabled selected>Select one</option>
-            <option value="father">Father</option>
-            <option value="mother">Mother</option>
-            <option value="guardian">Legal Guardian</option>
-            <option value="other">Other</option>
-          </select>
-          <div class="field-error" data-error-for="guardians.1.relationship"></div>
-        </div>
-
-        <div class="field">
-          <label for="guardian_religion_1">Religion <span class="required">*</span></label>
-          <input type="text" id="guardian_religion_1" />
-          <div class="field-error" data-error-for="guardians.1.religion"></div>
-        </div>
-
-        <div class="field">
-          <label for="guardian_address_1">Address <span class="required">*</span></label>
-          <input type="text" id="guardian_address_1" />
+          <label for="student_address">Learner's home address <span class="required">*</span></label>
+          <input type="text" id="student_address" required disabled />
           <div class="checkbox-field">
-            <label><input type="checkbox" id="guardian_same_address_1" /> Same address as above</label>
+            <label><input type="checkbox" id="student_same_address" checked /> Same address as Parent/Guardian 1</label>
           </div>
-          <div class="field-error" data-error-for="guardians.1.address"></div>
+          <div class="field-error" data-error-for="student.address"></div>
         </div>
 
         <div class="row">
           <div class="field">
-            <label for="guardian_town_city_1">Town / City <span class="required">*</span></label>
-            <input type="text" id="guardian_town_city_1" />
-            <div class="field-error" data-error-for="guardians.1.town_city"></div>
+            <label for="student_town_city">Town / City <span class="required">*</span></label>
+            <input type="text" id="student_town_city" required disabled />
+            <div class="field-error" data-error-for="student.town_city"></div>
           </div>
           <div class="field">
-            <label for="guardian_phone_1">Contact number <span class="required">*</span></label>
-            <input type="tel" id="guardian_phone_1" placeholder="+233XXXXXXXXX" />
-            <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
-            <div class="field-error" data-error-for="guardians.1.phone"></div>
+            <label for="student_postal_code">Postal code</label>
+            <input type="text" id="student_postal_code" />
+            <div class="field-error" data-error-for="student.postal_code"></div>
           </div>
         </div>
 
         <div class="field">
-          <label for="guardian_email_1">Active email address <span class="required">*</span></label>
-          <input type="email" id="guardian_email_1" />
-          <div class="field-error" data-error-for="guardians.1.email"></div>
+          <label for="student_country">Country</label>
+          <input type="text" id="student_country" value="Ghana" />
+          <div class="field-error" data-error-for="student.country"></div>
         </div>
-      </div>
-    </fieldset>
 
-    <fieldset>
-      <legend><span class="section-number">2.</span>Student information</legend>
-
-      <div class="field">
-        <label for="student_full_name">Full name <span class="required">*</span></label>
-        <input type="text" id="student_full_name" required />
-        <div class="field-error" data-error-for="student.full_name"></div>
-      </div>
-
-      <div class="field">
-        <label for="student_dob">Date of birth <span class="required">*</span></label>
-        <input type="text" id="student_dob" placeholder="dd/mm/yyyy" inputmode="numeric" maxlength="10" required />
-        <div class="hint" id="student_age"></div>
-        <div class="field-error" data-error-for="student.date_of_birth"></div>
-      </div>
-
-      <div class="field">
-        <label for="student_current_school">Learner's current school <span class="required">*</span></label>
-        <input type="text" id="student_current_school" placeholder="State N/A if not yet enrolled" required />
-        <div class="field-error" data-error-for="student.current_school"></div>
-      </div>
-
-      <div class="row">
         <div class="field">
-          <label for="student_current_grade">Current grade / class <span class="required">*</span></label>
-          <select id="student_current_grade" data-other-toggle="student_current_grade_other" required>
-            <!-- populated by script -->
-          </select>
-          <input type="text" id="student_current_grade_other" class="other-input" placeholder="Please specify" hidden />
-          <div class="field-error" data-error-for="student.current_grade"></div>
+          <label for="student_current_school">Learner's current school <span class="required">*</span></label>
+          <input type="text" id="student_current_school" placeholder="State N/A if not yet enrolled" required />
+          <div class="field-error" data-error-for="student.current_school"></div>
         </div>
-        <div class="field">
-          <label for="student_target_grade">Grade applying for <span class="required">*</span></label>
-          <select id="student_target_grade" data-other-toggle="student_target_grade_other" required>
-            <!-- populated by script -->
-          </select>
-          <input type="text" id="student_target_grade_other" class="other-input" placeholder="Please specify" hidden />
-          <div class="field-error" data-error-for="student.year_group_applied_for"></div>
-        </div>
-      </div>
 
-      <div class="row">
         <div class="field">
-          <label for="student_academic_year">Academic year applying for <span class="required">*</span></label>
-          <select id="student_academic_year" data-other-toggle="student_academic_year_other" required>
+          <label for="student_previous_school_location">Location/address of that school</label>
+          <input type="text" id="student_previous_school_location" placeholder="State N/A if not applicable" />
+          <div class="field-error" data-error-for="student.previous_school_location"></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="student_current_grade">Current grade / class <span class="required">*</span></label>
+            <select id="student_current_grade" data-other-toggle="student_current_grade_other" required>
+              <!-- populated by script -->
+            </select>
+            <input type="text" id="student_current_grade_other" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="student.current_grade"></div>
+          </div>
+          <div class="field">
+            <label for="student_target_grade">Grade applying for <span class="required">*</span></label>
+            <select id="student_target_grade" data-other-toggle="student_target_grade_other" required>
+              <!-- populated by script -->
+            </select>
+            <input type="text" id="student_target_grade_other" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="student.year_group_applied_for"></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="student_academic_year">Academic year applying for <span class="required">*</span></label>
+            <select id="student_academic_year" data-other-toggle="student_academic_year_other" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="2026">2026</option>
+              <option value="2027">2027</option>
+              <option value="2028">2028</option>
+              <option value="2029">2029</option>
+              <option value="2030">2030</option>
+              <option value="2031">2031</option>
+              <option value="2032">2032</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="text" id="student_academic_year_other" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="student.academic_year"></div>
+          </div>
+          <div class="field">
+            <label for="student_month">Month of enrolment <span class="required">*</span></label>
+            <select id="student_month" data-other-toggle="student_month_other" required>
+              <option value="" disabled selected>Select one</option>
+              <option value="January">January (Limited Admissions)</option>
+              <option value="September">September</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="text" id="student_month_other" class="other-input" placeholder="Please specify" hidden />
+            <div class="field-error" data-error-for="student.month_of_enrollment"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="student_campus">Campus applying to <span class="required">*</span></label>
+          <select id="student_campus" required>
             <option value="" disabled selected>Select one</option>
-            <option value="2026">2026</option>
-            <option value="2027">2027</option>
-            <option value="2028">2028</option>
-            <option value="2029">2029</option>
-            <option value="2030">2030</option>
-            <option value="2031">2031</option>
-            <option value="2032">2032</option>
-            <option value="other">Other</option>
+            <option value="Main">Main Campus</option>
+            <option value="Annex">Annex Campus (Pre Nursery &amp; Nursery 1 only)</option>
           </select>
-          <input type="text" id="student_academic_year_other" class="other-input" placeholder="Please specify" hidden />
-          <div class="field-error" data-error-for="student.academic_year"></div>
+          <div class="field-error" data-error-for="campus"></div>
         </div>
+      </fieldset>
+    </div>
+
+    <!-- Step 2: Emergency Contact -->
+    <div class="form-step" data-step="2" hidden>
+      <fieldset>
+        <legend><span class="section-number">3.</span>Emergency Contact</legend>
+        <p class="hint" style="margin-top: -0.5rem; margin-bottom: 1rem;">Someone we can reach if a parent/guardian is unavailable.</p>
+
         <div class="field">
-          <label for="student_month">Month of enrolment <span class="required">*</span></label>
-          <select id="student_month" data-other-toggle="student_month_other" required>
-            <option value="" disabled selected>Select one</option>
-            <option value="January">January (Limited Admissions)</option>
-            <option value="September">September</option>
-            <option value="other">Other</option>
-          </select>
-          <input type="text" id="student_month_other" class="other-input" placeholder="Please specify" hidden />
-          <div class="field-error" data-error-for="student.month_of_enrollment"></div>
+          <label for="emergency_contact_name">Full name <span class="required">*</span></label>
+          <input type="text" id="emergency_contact_name" required />
+          <div class="field-error" data-error-for="emergency_contact.name"></div>
         </div>
-      </div>
-    </fieldset>
 
-    <fieldset>
-      <legend><span class="section-number">3.</span>Document uploads</legend>
+        <div class="row">
+          <div class="field">
+            <label for="emergency_contact_relationship">Relationship to learner <span class="required">*</span></label>
+            <input type="text" id="emergency_contact_relationship" placeholder="e.g. Aunt, Family friend" required />
+            <div class="field-error" data-error-for="emergency_contact.relationship"></div>
+          </div>
+          <div class="field">
+            <label for="emergency_contact_phone">Contact number <span class="required">*</span></label>
+            <input type="tel" id="emergency_contact_phone" placeholder="+233XXXXXXXXX" required />
+            <div class="hint">Format: +233XXXXXXXXX — country code, then 9 digits, no spaces</div>
+            <div class="field-error" data-error-for="emergency_contact.phone"></div>
+          </div>
+        </div>
+      </fieldset>
+    </div>
 
-      <div class="document-field" id="doc-field-proof_of_vaccination">
-        <label for="doc-input-proof_of_vaccination">
-          Proof of vaccination <span class="required" id="vaccination-required-marker" hidden>*</span>
-        </label>
-        <div class="hint" id="vaccination-hint">Required for applicants to preschool grades (Pre Nursery through Kindergarten 2).</div>
-        <input type="file" id="doc-input-proof_of_vaccination" data-document-type="proof_of_vaccination" />
-        <div class="upload-status" id="doc-status-proof_of_vaccination"></div>
-        <div class="field-error" data-error-for="documents"></div>
-      </div>
+    <!-- Step 3: Health/Wellbeing -->
+    <div class="form-step" data-step="3" hidden>
+      <fieldset>
+        <legend><span class="section-number">4.</span>Health &amp; Wellbeing</legend>
 
-      <div class="document-field" id="doc-field-financial_clearance">
-        <label for="doc-input-financial_clearance">Proof of financial clearance from previous school</label>
-        <input type="file" id="doc-input-financial_clearance" data-document-type="financial_clearance" />
-        <div class="upload-status" id="doc-status-financial_clearance"></div>
-      </div>
+        <div class="field">
+          <label>Does the learner have any learning or physical needs we should be aware of? <span class="required">*</span></label>
+          <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="has_learning_or_physical_needs" value="yes" data-details-target="learning_or_physical_needs_details" required /> Yes</label>
+            <label class="radio-option"><input type="radio" name="has_learning_or_physical_needs" value="no" data-details-target="learning_or_physical_needs_details" required /> No</label>
+          </div>
+          <textarea id="learning_or_physical_needs_details" placeholder="Please provide details" hidden></textarea>
+          <div class="field-error" data-error-for="health_info.learning_or_physical_needs_details"></div>
+        </div>
 
-      <div class="document-field" id="doc-field-previous_report">
-        <label for="doc-input-previous_report">Report card / transcript from previous school</label>
-        <input type="file" id="doc-input-previous_report" data-document-type="previous_report" />
-        <div class="upload-status" id="doc-status-previous_report"></div>
-      </div>
-    </fieldset>
+        <div class="field">
+          <label>Does the learner have any medical conditions we should be aware of? <span class="required">*</span></label>
+          <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="has_medical_conditions" value="yes" data-details-target="medical_conditions_details" required /> Yes</label>
+            <label class="radio-option"><input type="radio" name="has_medical_conditions" value="no" data-details-target="medical_conditions_details" required /> No</label>
+          </div>
+          <textarea id="medical_conditions_details" placeholder="Please provide details" hidden></textarea>
+          <div class="field-error" data-error-for="health_info.medical_conditions_details"></div>
+        </div>
 
-    <button type="submit" id="submit-btn">Submit application</button>
+        <div class="field">
+          <label>Does the learner have any allergies or dietary requirements? <span class="required">*</span></label>
+          <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="has_allergies_or_dietary_requirements" value="yes" data-details-target="allergies_dietary_details" required /> Yes</label>
+            <label class="radio-option"><input type="radio" name="has_allergies_or_dietary_requirements" value="no" data-details-target="allergies_dietary_details" required /> No</label>
+          </div>
+          <textarea id="allergies_dietary_details" placeholder="Please provide details" hidden></textarea>
+          <div class="field-error" data-error-for="health_info.allergies_dietary_details"></div>
+        </div>
+      </fieldset>
+    </div>
+
+    <!-- Step 4: Documents & Payment -->
+    <div class="form-step" data-step="4" hidden>
+      <fieldset>
+        <legend><span class="section-number">5.</span>Documents &amp; Payment</legend>
+
+        <div class="document-field" id="doc-field-proof_of_vaccination">
+          <label for="doc-input-proof_of_vaccination">
+            Proof of vaccination <span class="required" id="vaccination-required-marker" hidden>*</span>
+          </label>
+          <div class="hint" id="vaccination-hint">Required for applicants to preschool grades (Pre Nursery through Kindergarten 2).</div>
+          <input type="file" id="doc-input-proof_of_vaccination" data-document-type="proof_of_vaccination" />
+          <div class="upload-status" id="doc-status-proof_of_vaccination"></div>
+          <div class="field-error" data-error-for="documents"></div>
+        </div>
+
+        <div class="document-field" id="doc-field-financial_clearance">
+          <label for="doc-input-financial_clearance">Proof of financial clearance from previous school</label>
+          <input type="file" id="doc-input-financial_clearance" data-document-type="financial_clearance" />
+          <div class="upload-status" id="doc-status-financial_clearance"></div>
+        </div>
+
+        <div class="document-field" id="doc-field-previous_report">
+          <label for="doc-input-previous_report">Report card / transcript from previous school</label>
+          <input type="file" id="doc-input-previous_report" data-document-type="previous_report" />
+          <div class="upload-status" id="doc-status-previous_report"></div>
+        </div>
+
+        <p class="block-heading">Application Fee — GHS 200.00</p>
+        <div class="payment-box">Once your application form is received and reviewed, you will be notified via e-mail regarding an admission decision after due process. Submission of an application form and payment of the application fee does NOT mean admission has been granted.
+
+ACCOUNT DETAILS:
+Consolidated Bank Ghana
+Account No: 0383011100001
+Name: Treasures Christian School
+
+PAYMENT PROCESS:
+Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (Bank account) → Option 1 (Wallet to bank account) → # for next → Option 16 (CBG) → Enter account number 0383011100001 → Enter amount GHS 200.00 → Enter Reference: name of the learner</div>
+
+        <div class="document-field" id="doc-field-application_fee_proof">
+          <label for="doc-input-application_fee_proof">Proof of application fee payment <span class="required">*</span></label>
+          <input type="file" id="doc-input-application_fee_proof" data-document-type="application_fee_proof" required />
+          <div class="upload-status" id="doc-status-application_fee_proof"></div>
+        </div>
+
+        <div class="field" style="margin-top: 1.5rem;">
+          <label>Are you interested in scholarship information? <span class="required">*</span></label>
+          <div class="hint">TCS offers several scholarship schemes through the Treasures Impact Foundation. <a href="https://drive.google.com/file/d/12dDFJDSY2yaKT-KdMBQ7Y4DGq7_Bhbgf/view?usp=sharing" target="_blank" rel="noopener">View scholarship details →</a></div>
+          <div class="radio-group" style="margin-top: 0.5rem;">
+            <label class="radio-option"><input type="radio" name="wants_scholarship_info" value="yes" data-details-target="scholarship_interest_details" required /> Yes</label>
+            <label class="radio-option"><input type="radio" name="wants_scholarship_info" value="no" data-details-target="scholarship_interest_details" required checked /> No</label>
+          </div>
+          <textarea id="scholarship_interest_details" placeholder="Tell us more" hidden></textarea>
+        </div>
+      </fieldset>
+    </div>
+
+    <!-- Step 5: Declaration -->
+    <div class="form-step" data-step="5" hidden>
+      <fieldset>
+        <legend><span class="section-number">6.</span>Declaration</legend>
+
+        <div class="declaration-text">
+          <h4>Indemnity Clause</h4>
+          <p>As the parent/guardian of the learner admitted to Treasures Christian School, I understand that the school strives to ensure safety but cannot eliminate all risks associated with school activities, both on and off campus. I release and hold harmless Treasures Christian School, its staff, and representatives from any claims or liabilities arising from my ward's participation in school activities, except in cases of proven gross negligence. I accept responsibility for disclosing any relevant medical conditions and understand the school may take emergency action if needed, with resulting costs being my responsibility.</p>
+
+          <h4>Data Protection</h4>
+          <p>By signing this form, I/We consent to Treasures Christian School collecting, processing, and storing personal data and information provided in this admission form for the purpose of enrollment, administration, communication, and the safety and welfare of the learner. I/We understand that this data will be handled in accordance with applicable data protection laws and the school's privacy policy.</p>
+
+          <h4>Declaration and Policy</h4>
+          <p>Choosing a school is an important decision. At TCS, we value strong partnerships with families who share our commitment to academic excellence, character development, and Christian values. TCS reserves the right to recommend an alternative placement or decline admission where the School is unable to adequately support the child's needs.</p>
+          <p>Newly admitted pupils may be placed under observation during an initial adjustment period.</p>
+          <p>TCS reserves the right to review or withdraw admission where significant concerns arise or where undisclosed needs emerge that the School cannot reasonably support.</p>
+          <p class="verse">"Train up a child in the way he should go, and when he is old he will not depart from it." — Proverbs 22:6</p>
+          <p>We look forward to welcoming your family into the TCS community.</p>
+          <p>I declare that the information provided in this form is true and correct to the best of my knowledge. I understand that any false information given may result in the withdrawal of an offer of a place or the removal of a student from the school. By signing this form, I consent and agree to the terms and conditions of Treasures Christian School.</p>
+        </div>
+
+        <div class="checkbox-field standalone">
+          <input type="checkbox" id="declaration_agreed" required />
+          <label for="declaration_agreed" style="margin-bottom: 0;">I have read and agree to the above Indemnity Clause, Data Protection consent, and Declaration &amp; Policy. <span class="required">*</span></label>
+        </div>
+        <div class="field-error" data-error-for="declaration_agreed"></div>
+
+        <p class="block-heading" style="margin-top: 1.5rem;">Media Consent (optional)</p>
+        <div class="declaration-text">
+          <p>I/We grant permission for the learner's photographs, videos, school work, and/or achievements to be used in school communications, including but not limited to newsletters, brochures, social media platforms, school website, and other promotional or marketing materials. These may be shared with the public to highlight school activities and celebrate student successes. If I/We wish to withdraw this media consent at any time, I/We understand that a written notice must be submitted to the school administration.</p>
+        </div>
+
+        <div class="checkbox-field standalone">
+          <input type="checkbox" id="media_consent_agreed" />
+          <label for="media_consent_agreed" style="margin-bottom: 0;">I/We grant media consent as described above.</label>
+        </div>
+
+        <div class="field" style="margin-top: 1.5rem;">
+          <label for="declaration_signature_name">Sign by entering your full name: <span class="required">*</span></label>
+          <input type="text" id="declaration_signature_name" required />
+          <div class="field-error" data-error-for="declaration_signature_name"></div>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="step-nav">
+      <button type="button" id="back-btn" class="nav-btn secondary" hidden>Back</button>
+      <button type="button" id="next-btn" class="nav-btn primary">Next</button>
+      <button type="submit" id="submit-btn" class="nav-btn primary" hidden>Submit application</button>
+    </div>
+    <div class="save-later-row">
+      <button type="button" id="save-later-btn" class="link-btn subtle">Save &amp; finish later</button>
+    </div>
   </form>
 </main>
 
 <script>
   const API_BASE = "http://127.0.0.1:8000/api/admissions";
+  const TOTAL_STEPS = 6;
   const form = document.getElementById("application-form");
   const submitBtn = document.getElementById("submit-btn");
+  const nextBtn = document.getElementById("next-btn");
+  const backBtn = document.getElementById("back-btn");
+  const saveLaterBtn = document.getElementById("save-later-btn");
   const messageBox = document.getElementById("form-message");
+  const progressFill = document.getElementById("progress-fill");
+  const progressLabel = document.getElementById("progress-label");
   const addGuardianBtn = document.getElementById("add-guardian-btn");
   const removeGuardianBtn = document.getElementById("remove-guardian-btn");
   const guardianBlock1 = document.getElementById("guardian-block-1");
@@ -567,14 +935,28 @@
   const guardianAddress1Input = document.getElementById("guardian_address_1");
   const sameAddressCheckbox = document.getElementById("guardian_same_address_1");
   const targetGradeSelect = document.getElementById("student_target_grade");
+  const studentAddressInput = document.getElementById("student_address");
+  const studentTownCityInput = document.getElementById("student_town_city");
+  const studentSameAddressCheckbox = document.getElementById("student_same_address");
+  const guardianTownCity0Input = document.getElementById("guardian_town_city_0");
 
   const PHONE_PATTERN = /^\+\d{3}\d{9}$/;
   const PHONE_ERROR_TEXT = "Enter a valid phone number in the format +233XXXXXXXXX (country code, then 9 digits, no spaces).";
   const vaccinationRequiredMarker = document.getElementById("vaccination-required-marker");
 
+  const STEP_LABELS = [
+    "Parent / Guardian information",
+    "Student information",
+    "Emergency Contact",
+    "Health & Wellbeing",
+    "Documents & Payment",
+    "Declaration",
+  ];
+
   const PRESCHOOL_GRADES = new Set([
     "Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "Kindergarten 2",
   ]);
+  const ANNEX_ACCEPTED_GRADES = new Set(["Pre Nursery", "Nursery 1"]);
   const CURRENT_GRADE_OPTIONS = [
     "Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "Kindergarten 2",
     "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6",
@@ -594,7 +976,62 @@
   document.getElementById("student_current_grade").innerHTML = gradeOptionsHtml(CURRENT_GRADE_OPTIONS);
   targetGradeSelect.innerHTML = gradeOptionsHtml(TARGET_GRADE_OPTIONS);
 
-  // --- second guardian toggle ---
+  // ================= step navigation =================
+  let currentStep = 0;
+
+  function showStep(n) {
+    currentStep = n;
+    document.querySelectorAll(".form-step").forEach((el) => {
+      el.hidden = parseInt(el.dataset.step, 10) !== n;
+    });
+    backBtn.hidden = n === 0;
+    nextBtn.hidden = n === TOTAL_STEPS - 1;
+    submitBtn.hidden = n !== TOTAL_STEPS - 1;
+    progressFill.style.width = `${((n + 1) / TOTAL_STEPS) * 100}%`;
+    progressLabel.textContent = `Step ${n + 1} of ${TOTAL_STEPS}: ${STEP_LABELS[n]}`;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function validateCurrentStepRequiredFields() {
+    const stepEl = document.querySelector(`.form-step[data-step="${currentStep}"]`);
+    const requiredInputs = stepEl.querySelectorAll("input[required], select[required], textarea[required]");
+    for (const el of requiredInputs) {
+      if (el.closest("[hidden]") === stepEl.parentElement) continue; // skip if some ancestor besides the step itself is hidden — n/a here
+      if (el.offsetParent === null && el.type !== "hidden") continue; // element itself not visible (e.g. an un-toggled "other" input)
+      if (el.type === "radio") {
+        const checked = stepEl.querySelector(`input[name="${el.name}"]:checked`);
+        if (!checked) return `Please answer: ${el.closest(".field").querySelector("label").textContent.replace("*", "").trim()}`;
+        continue;
+      }
+      if (el.type === "checkbox") {
+        if (!el.checked) return "Please check all required boxes before continuing.";
+        continue;
+      }
+      if (!el.value || !el.value.trim()) {
+        const label = el.closest(".field")?.querySelector("label")?.textContent?.replace("*", "").trim() || "a required field";
+        return `Please fill in: ${label}`;
+      }
+    }
+    return null;
+  }
+
+  nextBtn.addEventListener("click", async () => {
+    const error = validateCurrentStepRequiredFields();
+    if (error) {
+      showMessage(error, "error");
+      return;
+    }
+    clearMessages();
+    await saveDraft(false);
+    showStep(currentStep + 1);
+  });
+
+  backBtn.addEventListener("click", () => {
+    clearMessages();
+    showStep(currentStep - 1);
+  });
+
+  // ================= second guardian toggle =================
   addGuardianBtn.addEventListener("click", () => {
     guardianBlock1.hidden = false;
     addGuardianBtn.hidden = true;
@@ -634,6 +1071,34 @@
 
   guardianAddress0Input.addEventListener("input", syncGuardian1Address);
 
+  // ================= student "same address as guardian 1" =================
+  // Only address/town_city are copied — Guardian has no postal_code/country
+  // fields to copy from, so those stay independently editable regardless.
+  function syncStudentAddress() {
+    if (studentSameAddressCheckbox.checked) {
+      studentAddressInput.value = guardianAddress0Input.value;
+      studentTownCityInput.value = guardianTownCity0Input.value;
+    }
+  }
+
+  studentSameAddressCheckbox.addEventListener("change", () => {
+    const checked = studentSameAddressCheckbox.checked;
+    studentAddressInput.disabled = checked;
+    studentTownCityInput.disabled = checked;
+    const addrError = document.querySelector('[data-error-for="student.address"]');
+    const townError = document.querySelector('[data-error-for="student.town_city"]');
+    if (checked) {
+      syncStudentAddress();
+      [addrError, townError].forEach((el) => { if (el) { el.textContent = ""; el.classList.remove("visible"); } });
+    }
+  });
+
+  guardianAddress0Input.addEventListener("input", syncStudentAddress);
+  guardianTownCity0Input.addEventListener("input", syncStudentAddress);
+  // default-checked on load — populate immediately from whatever's already there
+  syncStudentAddress();
+
+  // ================= phone validation (guardians + emergency contact) =================
   form.addEventListener("input", (event) => {
     if (event.target.matches('input[id^="guardian_phone_"]')) {
       const input = event.target;
@@ -645,11 +1110,18 @@
         errorEl.classList.toggle("visible", !valid);
       }
     }
+    if (event.target.id === "emergency_contact_phone") {
+      const input = event.target;
+      const errorEl = document.querySelector('[data-error-for="emergency_contact.phone"]');
+      const valid = !input.value || PHONE_PATTERN.test(input.value);
+      if (errorEl) {
+        errorEl.textContent = valid ? "" : PHONE_ERROR_TEXT;
+        errorEl.classList.toggle("visible", !valid);
+      }
+    }
   });
 
-  // --- date of birth: dd/mm/yyyy, not the browser's locale-dependent
-  // native <input type="date"> rendering — parsed here and converted to
-  // ISO (yyyy-mm-dd) only when building the API payload.
+  // ================= date of birth: dd/mm/yyyy =================
   function maskDateInput(raw) {
     const digits = raw.replace(/\D/g, "").slice(0, 8);
     const parts = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 8)].filter(Boolean);
@@ -667,7 +1139,11 @@
     return { iso: `${yyyy}-${mm}-${dd}`, date };
   }
 
-  // --- age display ---
+  function isoToDMY(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
+  }
+
   function computeAge(parsed) {
     if (!parsed) return null;
     const today = new Date();
@@ -697,7 +1173,7 @@
     }
   });
 
-  // --- "Other" toggles ---
+  // ================= "Other" toggles (selects) =================
   form.addEventListener("change", (event) => {
     const select = event.target;
     if (select.tagName === "SELECT" && select.dataset.otherToggle) {
@@ -710,6 +1186,18 @@
     }
   });
 
+  // ================= yes/no radio -> details textarea toggles =================
+  form.addEventListener("change", (event) => {
+    if (event.target.type === "radio" && event.target.dataset.detailsTarget) {
+      const textarea = document.getElementById(event.target.dataset.detailsTarget);
+      if (!textarea) return;
+      const isYes = event.target.value === "yes";
+      textarea.hidden = !isYes;
+      textarea.required = isYes;
+      if (!isYes) textarea.value = "";
+    }
+  });
+
   function resolveSelectValue(selectEl) {
     if (selectEl.value === "other") {
       const otherEl = document.getElementById(selectEl.dataset.otherToggle);
@@ -718,14 +1206,36 @@
     return selectEl.value;
   }
 
-  // --- vaccination requirement follows the grade applying for ---
+  function radioValue(name) {
+    const checked = document.querySelector(`input[name="${name}"]:checked`);
+    return checked ? checked.value : "";
+  }
+
+  // ================= vaccination requirement + Annex campus restriction =================
+  function checkGradeAgainstCampus() {
+    const grade = targetGradeSelect.value;
+    const campusSelect = document.getElementById("student_campus");
+    const campusError = document.querySelector('[data-error-for="campus"]');
+    if (campusSelect.value === "Annex" && grade && !ANNEX_ACCEPTED_GRADES.has(grade)) {
+      if (campusError) {
+        campusError.textContent = "Annex campus only accepts Pre Nursery and Nursery 1.";
+        campusError.classList.add("visible");
+      }
+    } else if (campusError) {
+      campusError.textContent = "";
+      campusError.classList.remove("visible");
+    }
+  }
+
   targetGradeSelect.addEventListener("change", () => {
     const isPreschool = PRESCHOOL_GRADES.has(targetGradeSelect.value);
     vaccinationRequiredMarker.hidden = !isPreschool;
     document.getElementById("doc-input-proof_of_vaccination").dataset.required = isPreschool ? "true" : "false";
+    checkGradeAgainstCampus();
   });
+  document.getElementById("student_campus").addEventListener("change", checkGradeAgainstCampus);
 
-  // --- document upload: fires immediately on file selection ---
+  // ================= document upload: fires immediately on file selection =================
   const uploadedDocuments = {}; // document_type -> file_path
   let pendingUploads = 0;
 
@@ -745,7 +1255,6 @@
     statusEl.textContent = "Uploading…";
     statusEl.className = "upload-status uploading";
     pendingUploads++;
-    submitBtn.disabled = true;
 
     try {
       const urlResp = await fetch(`${API_BASE}/upload-url/`, {
@@ -772,7 +1281,6 @@
       input.value = "";
     } finally {
       pendingUploads--;
-      if (pendingUploads === 0) submitBtn.disabled = false;
     }
   }
 
@@ -780,7 +1288,7 @@
     input.addEventListener("change", handleFileSelected);
   });
 
-  // --- payload assembly ---
+  // ================= payload assembly (shared by draft-save and final submit) =================
   function collectGuardianData(index) {
     return {
       surname: document.getElementById(`guardian_surname_${index}`).value.trim(),
@@ -803,7 +1311,14 @@
     const student = {
       full_name: document.getElementById("student_full_name").value.trim(),
       date_of_birth: dobParsed ? dobParsed.iso : dobRaw,
+      gender: document.getElementById("student_gender").value,
+      nationality: document.getElementById("student_nationality").value.trim(),
+      address: studentAddressInput.value.trim(),
+      town_city: studentTownCityInput.value.trim(),
+      postal_code: document.getElementById("student_postal_code").value.trim(),
+      country: document.getElementById("student_country").value.trim(),
       current_school: document.getElementById("student_current_school").value.trim(),
+      previous_school_location: document.getElementById("student_previous_school_location").value.trim(),
       current_grade: resolveSelectValue(document.getElementById("student_current_grade")),
       year_group_applied_for: resolveSelectValue(targetGradeSelect),
       academic_year: resolveSelectValue(document.getElementById("student_academic_year")),
@@ -815,10 +1330,205 @@
       file_path,
     }));
 
-    return { guardians, student, documents };
+    const emergency_contact = {
+      name: document.getElementById("emergency_contact_name").value.trim(),
+      relationship: document.getElementById("emergency_contact_relationship").value.trim(),
+      phone: document.getElementById("emergency_contact_phone").value.trim(),
+    };
+
+    const health_info = {
+      has_learning_or_physical_needs: radioValue("has_learning_or_physical_needs") === "yes",
+      learning_or_physical_needs_details: document.getElementById("learning_or_physical_needs_details").value.trim(),
+      has_medical_conditions: radioValue("has_medical_conditions") === "yes",
+      medical_conditions_details: document.getElementById("medical_conditions_details").value.trim(),
+      has_allergies_or_dietary_requirements: radioValue("has_allergies_or_dietary_requirements") === "yes",
+      allergies_dietary_details: document.getElementById("allergies_dietary_details").value.trim(),
+    };
+
+    return {
+      guardians,
+      student,
+      documents,
+      campus: document.getElementById("student_campus").value,
+      emergency_contact,
+      health_info,
+      wants_scholarship_info: radioValue("wants_scholarship_info") === "yes",
+      scholarship_interest_details: document.getElementById("scholarship_interest_details").value.trim(),
+      declaration_signature_name: document.getElementById("declaration_signature_name").value.trim(),
+      declaration_agreed: document.getElementById("declaration_agreed").checked,
+      media_consent_agreed: document.getElementById("media_consent_agreed").checked,
+    };
   }
 
-  // --- messaging (same pattern as index.html) ---
+  // ================= draft save / resume =================
+  let draftToken = new URLSearchParams(window.location.search).get("draft_token") || null;
+  let draftReady = null; // promise, resolves once we have a token (existing or freshly created)
+
+  async function ensureDraftToken() {
+    if (draftToken) return draftToken;
+    const resp = await fetch(`${API_BASE}/application-drafts/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: {}, current_step: 0 }),
+    });
+    const body = await resp.json();
+    draftToken = body.token;
+    return draftToken;
+  }
+
+  async function saveDraft(sendEmail) {
+    await ensureDraftToken();
+    const payload = collectPayload();
+    const email = payload.guardians[0]?.email || "";
+    const body = { email, data: payload, current_step: currentStep };
+    if (sendEmail) body.send_email = true;
+
+    await fetch(`${API_BASE}/application-drafts/${draftToken}/`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  saveLaterBtn.addEventListener("click", async () => {
+    let email = document.getElementById("guardian_email_0").value.trim();
+    if (!email) {
+      email = window.prompt("Which email address should we send your resume link to?", "") || "";
+      email = email.trim();
+      if (!email) return;
+      document.getElementById("guardian_email_0").value = email;
+    }
+    saveLaterBtn.disabled = true;
+    saveLaterBtn.textContent = "Saving…";
+    try {
+      await saveDraft(true);
+      showMessage(`Progress saved. We've emailed a link to ${email} so you can finish later.`, "success");
+    } catch (err) {
+      showMessage("Could not save your progress right now. Please try again.", "error");
+    } finally {
+      saveLaterBtn.disabled = false;
+      saveLaterBtn.textContent = "Save & finish later";
+    }
+  });
+
+  async function loadDraft(token) {
+    try {
+      const resp = await fetch(`${API_BASE}/application-drafts/${token}/`);
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        showMessage(body.detail || "Could not load your saved application.", "error");
+        draftToken = null;
+        return;
+      }
+      const body = await resp.json();
+      populateForm(body.data || {});
+      showStep(body.current_step || 0);
+      showMessage("Welcome back — your saved progress has been restored.", "info");
+    } catch (err) {
+      showMessage("Could not load your saved application. Starting fresh.", "error");
+      draftToken = null;
+    }
+  }
+
+  function populateForm(data) {
+    if (!data || Object.keys(data).length === 0) return;
+
+    (data.guardians || []).forEach((g, index) => {
+      if (index === 1) {
+        guardianBlock1.hidden = false;
+        addGuardianBtn.hidden = true;
+        guardianBlock1.querySelectorAll("input, select").forEach((el) => {
+          if (el.type !== "checkbox" && !el.classList.contains("other-input")) el.required = true;
+        });
+      }
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+      setVal(`guardian_surname_${index}`, g.surname);
+      setVal(`guardian_first_name_${index}`, g.first_name);
+      setVal(`guardian_relationship_${index}`, g.relationship);
+      setVal(`guardian_religion_${index}`, g.religion);
+      setVal(`guardian_address_${index}`, g.address);
+      setVal(`guardian_town_city_${index}`, g.town_city);
+      setVal(`guardian_phone_${index}`, g.phone);
+      setVal(`guardian_email_${index}`, g.email);
+    });
+
+    const s = data.student || {};
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+    setVal("student_full_name", s.full_name);
+    if (s.date_of_birth) document.getElementById("student_dob").value = isoToDMY(s.date_of_birth);
+    setVal("student_gender", s.gender);
+    setVal("student_nationality", s.nationality);
+    setVal("student_current_school", s.current_school);
+    setVal("student_previous_school_location", s.previous_school_location);
+    setVal("student_postal_code", s.postal_code);
+    if (s.country !== undefined) setVal("student_country", s.country);
+
+    const sameAddress = s.address && s.address === guardianAddress0Input.value;
+    studentSameAddressCheckbox.checked = !!sameAddress || (!s.address);
+    if (!studentSameAddressCheckbox.checked) {
+      studentAddressInput.disabled = false;
+      studentTownCityInput.disabled = false;
+      setVal("student_address", s.address);
+      setVal("student_town_city", s.town_city);
+    } else {
+      syncStudentAddress();
+    }
+
+    if (s.current_grade) document.getElementById("student_current_grade").value = s.current_grade;
+    if (s.year_group_applied_for) {
+      targetGradeSelect.value = s.year_group_applied_for;
+      targetGradeSelect.dispatchEvent(new Event("change"));
+    }
+    if (s.academic_year) document.getElementById("student_academic_year").value = s.academic_year;
+    if (s.month_of_enrollment) document.getElementById("student_month").value = s.month_of_enrollment;
+    if (data.campus) {
+      document.getElementById("student_campus").value = data.campus;
+      checkGradeAgainstCampus();
+    }
+
+    const ec = data.emergency_contact || {};
+    setVal("emergency_contact_name", ec.name);
+    setVal("emergency_contact_relationship", ec.relationship);
+    setVal("emergency_contact_phone", ec.phone);
+
+    const hi = data.health_info || {};
+    [
+      ["has_learning_or_physical_needs", "learning_or_physical_needs_details"],
+      ["has_medical_conditions", "medical_conditions_details"],
+      ["has_allergies_or_dietary_requirements", "allergies_dietary_details"],
+    ].forEach(([flagField, detailsField]) => {
+      if (hi[flagField] === undefined) return;
+      const value = hi[flagField] ? "yes" : "no";
+      const radio = document.querySelector(`input[name="${flagField}"][value="${value}"]`);
+      if (radio) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event("change"));
+      }
+      setVal(detailsField, hi[detailsField]);
+    });
+
+    if (data.wants_scholarship_info !== undefined) {
+      const value = data.wants_scholarship_info ? "yes" : "no";
+      const radio = document.querySelector(`input[name="wants_scholarship_info"][value="${value}"]`);
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
+      setVal("scholarship_interest_details", data.scholarship_interest_details);
+    }
+
+    (data.documents || []).forEach((doc) => {
+      uploadedDocuments[doc.document_type] = doc.file_path;
+      const statusEl = document.getElementById(`doc-status-${doc.document_type}`);
+      if (statusEl) {
+        statusEl.textContent = "Already uploaded";
+        statusEl.className = "upload-status done";
+      }
+    });
+
+    setVal("declaration_signature_name", data.declaration_signature_name);
+    if (data.declaration_agreed) document.getElementById("declaration_agreed").checked = true;
+    if (data.media_consent_agreed) document.getElementById("media_consent_agreed").checked = true;
+  }
+
+  // ================= messaging =================
   function clearMessages() {
     messageBox.className = "message";
     messageBox.innerHTML = "";
@@ -860,42 +1570,30 @@
     });
   }
 
-  function resetForm() {
-    form.reset();
-    guardianBlock1.hidden = true;
-    addGuardianBtn.hidden = false;
-    document.querySelectorAll(".other-input").forEach((el) => {
-      el.hidden = true;
-      el.required = false;
-    });
-    document.getElementById("student_age").textContent = "";
-    vaccinationRequiredMarker.hidden = true;
-    Object.keys(uploadedDocuments).forEach((k) => delete uploadedDocuments[k]);
-    document.querySelectorAll(".upload-status").forEach((el) => {
-      el.textContent = "";
-      el.className = "upload-status";
-    });
-  }
-
+  // ================= final submit =================
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearMessages();
 
+    const error = validateCurrentStepRequiredFields();
+    if (error) {
+      showMessage(error, "error");
+      return;
+    }
     if (pendingUploads > 0) {
       showMessage("Please wait for document uploads to finish before submitting.", "error");
       return;
     }
 
-    const payload = collectPayload();
-
     submitBtn.disabled = true;
     submitBtn.textContent = "Submitting…";
 
     try {
-      const response = await fetch(`${API_BASE}/applications/`, {
+      await saveDraft(false);
+      const response = await fetch(`${API_BASE}/application-drafts/${draftToken}/submit/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({}),
       });
 
       if (response.ok) {
@@ -906,7 +1604,9 @@
           + "Our admissions team will review your documents and be in touch soon.",
           "success"
         );
-        resetForm();
+        nextBtn.disabled = true;
+        submitBtn.disabled = true;
+        backBtn.disabled = true;
       } else {
         const errorData = await response.json().catch(() => ({}));
         if (response.status === 400 && typeof errorData === "object") {
@@ -923,14 +1623,22 @@
         } else {
           showMessage("Something went wrong submitting your application. Please try again.", "error");
         }
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit application";
       }
     } catch (err) {
       showMessage("Could not reach the server. Please check your connection and try again.", "error");
-    } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = "Submit application";
     }
   });
+
+  // ================= init =================
+  if (draftToken) {
+    loadDraft(draftToken);
+  } else {
+    showStep(0);
+  }
 </script>
 </body>
 </html>

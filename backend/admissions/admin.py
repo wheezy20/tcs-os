@@ -9,8 +9,8 @@ from unfold.admin import ModelAdmin, StackedInline, TabularInline
 
 from . import emails, storage
 from .models import (
-    Application, Capacity, Decision, Document, Family, Guardian, Note,
-    Offer, ReferenceCounter, Student,
+    Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmergencyContact,
+    Family, Guardian, HealthInfo, Note, Offer, ReferenceCounter, Student,
 )
 
 
@@ -100,16 +100,45 @@ class OfferInline(StackedInline):
         return self._can_decide(request)
 
 
+class EmergencyContactInline(TabularInline):
+    model = EmergencyContact
+    extra = 0
+
+
+class HealthInfoInline(StackedInline):
+    """Real health data about a child — gated behind admissions.can_view_health_info
+    so staff without that permission don't see this section exists at all,
+    not just a read-only view of it. See HealthInfo's own docstring."""
+    model = HealthInfo
+    extra = 0
+    max_num = 1
+
+    def _can_view_health_info(self, request):
+        return request.user.has_perm("admissions.can_view_health_info")
+
+    def has_view_permission(self, request, obj=None):
+        return self._can_view_health_info(request)
+
+    def has_add_permission(self, request, obj=None):
+        return self._can_view_health_info(request)
+
+    def has_change_permission(self, request, obj=None):
+        return self._can_view_health_info(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return self._can_view_health_info(request)
+
+
 @admin.register(Application)
 class ApplicationAdmin(ModelAdmin):
-    inlines = [DecisionInline, OfferInline, DocumentInline, NoteInline]
+    inlines = [DecisionInline, OfferInline, DocumentInline, EmergencyContactInline, HealthInfoInline, NoteInline]
     list_display = (
-        "student", "year_group_applied_for", "academic_year", "month_of_enrollment",
+        "student", "campus", "year_group_applied_for", "academic_year", "month_of_enrollment",
         "stage", "inquiry_reference", "application_reference", "updated_at",
     )
-    list_filter = ("stage", "academic_year", "year_group_applied_for")
+    list_filter = ("stage", "campus", "academic_year", "year_group_applied_for")
     search_fields = ("student__full_name", "inquiry_reference", "application_reference")
-    readonly_fields = ("inquiry_reference", "application_reference")
+    readonly_fields = ("inquiry_reference", "application_reference", "declaration_agreed_at", "declaration_ip_address")
     actions = [
         "mark_as_application", "mark_as_document_review",
         "generate_offer", "reset_offer", "mark_as_enrolled",
@@ -145,7 +174,10 @@ class ApplicationAdmin(ModelAdmin):
     def _warn_if_over_capacity(self, request, decision):
         """Soft warning only — never blocks the save. Real admissions has
         legitimate reasons to go over capacity on paper (sibling priority,
-        board exceptions), so this is informational, not a gate."""
+        board exceptions), so this is informational, not a gate. Scoped by
+        campus too (Phase 5) — TCS's two campuses are physically separate
+        seat pools, so a campus=None Application only ever matches a
+        campus=None Capacity row, never conflating the two."""
         if decision.decision_type != "accepted":
             return
 
@@ -153,21 +185,24 @@ class ApplicationAdmin(ModelAdmin):
         capacity = Capacity.objects.filter(
             academic_year=application.academic_year,
             year_group=application.year_group_applied_for,
+            campus=application.campus,
         ).first()
         if not capacity:
-            return  # no capacity defined for this (year, grade) — nothing to compare against
+            return  # no capacity defined for this (year, grade, campus) — nothing to compare against
 
         accepted_count = Decision.objects.filter(
             decision_type="accepted",
             application__academic_year=application.academic_year,
             application__year_group_applied_for=application.year_group_applied_for,
+            application__campus=application.campus,
         ).count()
 
         if accepted_count > capacity.capacity:
+            campus_label = f" @ {application.campus}" if application.campus else ""
             self.message_user(
                 request,
                 f"Capacity warning: {application.year_group_applied_for} "
-                f"({application.academic_year}) now has {accepted_count} accepted "
+                f"({application.academic_year}{campus_label}) now has {accepted_count} accepted "
                 f"decision(s) against a capacity of {capacity.capacity}.",
                 level=messages.WARNING,
             )
@@ -271,7 +306,10 @@ class ApplicationAdmin(ModelAdmin):
 
 @admin.register(Student)
 class StudentAdmin(ModelAdmin):
-    list_display = ("full_name", "family", "date_of_birth", "current_grade", "current_school", "student_id")
+    list_display = (
+        "full_name", "family", "date_of_birth", "gender", "nationality",
+        "current_grade", "current_school", "student_id",
+    )
     search_fields = ("full_name", "student_id")
     readonly_fields = ("student_id",)
 
@@ -292,6 +330,28 @@ class ReferenceCounterAdmin(ModelAdmin):
 
 @admin.register(Capacity)
 class CapacityAdmin(ModelAdmin):
-    list_display = ("year_group", "academic_year", "capacity")
-    list_filter = ("academic_year",)
+    list_display = ("year_group", "academic_year", "campus", "capacity")
+    list_filter = ("academic_year", "campus")
     search_fields = ("year_group",)
+
+
+@admin.register(Campus)
+class CampusAdmin(ModelAdmin):
+    list_display = ("name",)
+
+
+@admin.register(ApplicationDraft)
+class ApplicationDraftAdmin(ModelAdmin):
+    """Visibility/support only — staff can look up a stuck parent's draft by
+    email, but the JSON blob isn't meant to be hand-edited. Note this can
+    contain the same health/wellbeing data HealthInfoInline restricts
+    elsewhere, since it's whatever step of the multi-step form the parent
+    last saved."""
+    list_display = ("email", "current_step", "is_submitted", "created_at", "expires_at")
+    list_filter = ("current_step",)
+    search_fields = ("email", "token")
+    readonly_fields = ("token", "created_at", "updated_at", "submitted_application")
+
+    @admin.display(boolean=True)
+    def is_submitted(self, obj):
+        return obj.is_submitted

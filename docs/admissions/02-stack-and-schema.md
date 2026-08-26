@@ -65,6 +65,15 @@ POST   /api/admissions/offers/<token>/respond/  (public — the offer's own toke
                                                   control, same trust model as the two endpoints above)
 ```
 
+## Phase 5 API surface
+
+```
+POST   /api/admissions/application-drafts/                 (public — create a draft, returns a token)
+GET    /api/admissions/application-drafts/<token>/          (public — resume: fetch saved progress)
+PATCH  /api/admissions/application-drafts/<token>/          (public — save progress)
+POST   /api/admissions/application-drafts/<token>/submit/   (public — final submit, via ApplicationSerializer)
+```
+
 Everything else (staff review, stage changes, document approval) happens through Django admin, no separate staff-facing endpoint or UI needed yet.
 
 ### Application dedup / matching (no auth, no parent portal yet)
@@ -392,12 +401,128 @@ through — this found two real, previously-untested bugs:
 Also dropped `build-essential`/`libpq-dev` — `psycopg2-binary` is a
 prebuilt wheel, nothing in `requirements.txt` needs a compiler.
 
+## Phase 5 — expanded Application form
+
+Full plan (schema, draft/resume design, the Campus×Capacity tradeoff) reviewed
+and approved by the user before any code was written — see `04-build-log.md`
+for the exact resolutions this section assumes.
+
+### Schema
+
+- `Student` gains `gender`, `nationality`, and its own address block
+  (`address`, `town_city`, `postal_code`, `country`) — previously only
+  `Guardian` had an address at all. Also `previous_school_location`, distinct
+  from `current_school` (the school's *name*). All `blank=True` — Inquiry
+  still doesn't collect them, only Application does.
+- New `Campus` model (`Main`, `Annex`, seeded via a data migration). Annex
+  only accepts Pre Nursery/Nursery 1 — enforced in
+  `ApplicationSerializer.validate()` via a hardcoded grade set
+  (`ANNEX_ACCEPTED_GRADES`), the same pattern `PRESCHOOL_GRADES`'s
+  vaccination check already used, checked by `Campus.name` (see the model's
+  own docstring for the tradeoff: renaming that row in admin silently
+  disables the check).
+- New `EmergencyContact` (plain FK, `related_name="emergency_contacts"`) and
+  `HealthInfo` (OneToOne) — both scoped to **Application**, not Student or
+  Family, specifically so they appear as inlines on the same
+  `ApplicationAdmin` page staff already use for Decision/Offer/Document/Note,
+  rather than requiring a second admin screen.
+- `HealthInfo` is real child health data — restricted behind a new
+  `admissions.can_view_health_info` permission (`Meta.permissions`, same
+  mechanism `Decision.can_decide` already uses). `HealthInfoInline` overrides
+  `has_view_permission`/`has_add_permission`/`has_change_permission`/
+  `has_delete_permission` to all check that permission, so staff without it
+  don't see the section exists at all. It's never in `list_display`,
+  `search_fields`, or an export. **Nobody has this permission by default** —
+  granting it to a role is left as a deliberate decision for the user, not
+  auto-assigned to the existing Admissions Officer group.
+- `Capacity` gains a `campus` FK, `unique_together` now
+  `(academic_year, year_group, campus)` — TCS's two campuses are physically
+  separate seat pools. A null campus means "not campus-specific." Postgres
+  treats NULL as never equal to itself, so two `campus=NULL` rows for the
+  same (year, grade) aren't actually prevented by that constraint —
+  acceptable at this table's scale (hand-managed by admin staff), not worth
+  a partial unique index. `ApplicationAdmin._warn_if_over_capacity` filters
+  by campus too now; verified independently (a Main grade going over its own
+  cap doesn't warn against Annex's separate cap for the same grade/year, and
+  vice versa).
+- `Application` gains `campus` (FK, nullable — existing rows have none),
+  `wants_scholarship_info`/`scholarship_interest_details`, and the
+  declaration fields below. No new model for scholarship — not a distinct
+  sensitive category, low complexity, lives directly on Application.
+- `Document.TYPE_CHOICES` gains `application_fee_proof` — reuses the
+  existing Document model entirely for the new GHS 200 application fee
+  (offline bank transfer/mobile money only; a real payment portal is future
+  scope, not attempted here). Same `required → pending_review → approved/
+  rejected` review workflow every other document already has. Not hard-
+  enforced server-side (unlike vaccination for preschool) — consistent with
+  how `financial_clearance`/`previous_report` are already optional-but-
+  expected, not gated.
+- Declaration is **two independent consents**, not one: `declaration_agreed`
+  (indemnity/data-protection/accuracy, required to submit) and
+  `media_consent_agreed` (separate, optional, default unchecked — the
+  media-consent text is independently revocable per its own wording, so it's
+  a distinct field rather than folded into the main declaration). Plus
+  `declaration_signature_name`, `declaration_agreed_at` (set server-side at
+  submit, not user-entered), and `declaration_ip_address` (best-effort audit
+  trail — `REMOTE_ADDR` may reflect a Cloudflare/Cloud Run proxy hop rather
+  than the parent's real IP, not a verified identity).
+- `campus` is looked up by **name** (`SlugRelatedField`), not primary key —
+  the frontend's two campus options are hardcoded static HTML (`Main`/
+  `Annex`, matching the dependency-free no-build-step pattern the rest of
+  these forms use), so it only ever knows Campus by name, never a DB id.
+
+### Draft/resume mechanism
+
+New `ApplicationDraft` model — same token generator and trust model as
+`Offer`'s existing resume link (an unguessable token *is* the access
+control, no parent login exists). Stores the whole in-progress multi-step
+form as a JSON blob (`data`) rather than partial real `Student`/`Guardian`
+rows: a draft can be genuinely incomplete or invalid at any point (no email
+yet, a malformed date), and creating partial real rows for that would either
+fail validation or pollute the real tables. Full validation only ever
+happens once, at final submit, through the *same* `ApplicationSerializer` a
+direct `/applications/` POST uses — one source of truth for what "valid"
+means, not a second looser one for drafts.
+
+```
+POST   /api/admissions/application-drafts/                 create, returns a token
+GET    /api/admissions/application-drafts/<token>/         resume — fetch saved data + current_step
+PATCH  /api/admissions/application-drafts/<token>/         save progress (autosave on every step, or explicit "save for later")
+POST   /api/admissions/application-drafts/<token>/submit/  final submission — runs data through ApplicationSerializer
+```
+
+`expires_at` resolved lazily (`ApplicationDraft.is_expired`), same pattern as
+`Offer.refresh_expiry()` — no scheduler exists in this project.
+`DRAFT_EXPIRY_DAYS` defaults to 30 (longer than `OFFER_EXPIRY_DAYS`'s 14 —
+gathering documents can take a parent weeks). The "email me a resume link"
+action is explicit (a distinct button), separate from the silent autosave
+that happens on every step — autosaving on every keystroke-level save would
+spam the parent's inbox otherwise.
+
+This is a deliberate stopgap, not a replacement for a real parent
+login/portal — flagged as a known future need in `01-vision.md`.
+
+### Frontend
+
+`application.html` rebuilt as a 6-step form (Guardian(s) → Student →
+Emergency Contact → Health/Wellbeing → Documents & Payment → Declaration)
+with a progress bar and Next/Back navigation, still fully dependency-free
+(no build step, no framework) — step visibility is plain JS show/hide over
+what were already fieldsets. The student's "same address as guardian"
+checkbox defaults **checked** (opposite of guardian 2's own equivalent
+checkbox, which defaults unchecked) — most students live with guardian 1, so
+default to that and let the parent uncheck if different. Only `address`/
+`town_city` are copied from guardian 1; `postal_code`/`country` have no
+guardian-side equivalent to copy from, so they stay independently editable
+regardless of the checkbox.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.
+- `admissions.can_view_health_info` (Phase 5) — ungranted by default; who gets it is a decision for the user, not auto-assigned.
 
 ## Open questions to resolve before/during Phase 1
 
 - Exact required documents per year group (Preschool through JHS may differ)
 - Who are the actual admissions staff roles at TCS right now, and what should each see?
-- Application fee: does TCS charge one? If yes, a payment step needs to enter the plan; if no, skip payment concerns entirely for now.
+- ~~Application fee: does TCS charge one?~~ Resolved in Phase 5 — yes, GHS 200, offline bank transfer/mobile money, proof uploaded as a Document.

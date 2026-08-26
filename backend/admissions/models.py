@@ -1,6 +1,8 @@
 import logging
 import secrets
+from datetime import timedelta
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
@@ -75,6 +77,14 @@ def _next_application_reference():
 
 def _generate_offer_token():
     return secrets.token_urlsafe(32)
+
+
+def _generate_draft_token():
+    return secrets.token_urlsafe(32)
+
+
+def _default_draft_expiry():
+    return timezone.now() + timedelta(days=settings.DRAFT_EXPIRY_DAYS)
 
 
 def _assign_student_id_if_needed(application):
@@ -157,12 +167,42 @@ class Guardian(models.Model):
         return self.full_name
 
 
+class Campus(models.Model):
+    """A physical TCS campus. Currently Main and Annex — Annex accepts only a
+    subset of grades (see ANNEX_ACCEPTED_GRADES in serializers.py, checked by
+    name against this row, so renaming a Campus row in admin silently
+    disables that check — small, known tradeoff for a 2-row lookup table)."""
+
+    name = models.CharField(max_length=100, unique=True)
+
+    class Meta:
+        verbose_name_plural = "campuses"
+
+    def __str__(self):
+        return self.name
+
+
 class Student(models.Model):
+    GENDER_CHOICES = [
+        ("male", "Male"),
+        ("female", "Female"),
+    ]
+
     family = models.ForeignKey(Family, on_delete=models.CASCADE, related_name="students")
     full_name = models.CharField(max_length=255)
     date_of_birth = models.DateField(null=True, blank=True)
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True, default="")
+    nationality = models.CharField(max_length=100, blank=True, default="")
+    address = models.CharField(max_length=255, blank=True, default="")
+    town_city = models.CharField(max_length=255, blank=True, default="")
+    postal_code = models.CharField(max_length=20, blank=True, default="")
+    country = models.CharField(max_length=100, blank=True, default="")
     current_school = models.CharField(
         max_length=255, blank=True, default="", help_text="e.g. 'N/A' if not yet enrolled anywhere"
+    )
+    previous_school_location = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Address/location of current_school — distinct from current_school itself, which is the school's name",
     )
     current_grade = models.CharField(max_length=50, blank=True, default="", help_text="Learner's current grade/class")
     student_id = models.CharField(
@@ -219,6 +259,28 @@ class Application(models.Model):
         "reaches 'application' or later (whether created there directly or advanced from "
         "an inquiry) — never reassigned as it moves further through the pipeline.",
     )
+    campus = models.ForeignKey(
+        Campus, on_delete=models.PROTECT, null=True, blank=True, related_name="applications",
+    )
+
+    wants_scholarship_info = models.BooleanField(default=False)
+    scholarship_interest_details = models.TextField(blank=True, default="")
+
+    # Declaration — typed-name + checkbox, same trust level as everything else
+    # in this system (see Offer's docstring). declaration_agreed covers the
+    # indemnity/data-protection/accuracy declaration and is required to
+    # submit; media_consent_agreed is a separate, independently-revocable
+    # opt-in per the consent text's own language, so it's a distinct field
+    # rather than folded into declaration_agreed.
+    declaration_signature_name = models.CharField(max_length=255, blank=True, default="")
+    declaration_agreed = models.BooleanField(default=False)
+    declaration_agreed_at = models.DateTimeField(null=True, blank=True)
+    # Best-effort audit trail, not a verified identity — request.META['REMOTE_ADDR']
+    # may reflect a proxy hop (Cloudflare/Cloud Run) rather than the parent's
+    # real IP unless X-Forwarded-For parsing is added later.
+    declaration_ip_address = models.GenericIPAddressField(null=True, blank=True)
+    media_consent_agreed = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -403,23 +465,35 @@ class Offer(models.Model):
 
 
 class Capacity(models.Model):
-    """Seats available per (academic_year, year_group). ApplicationAdmin
-    shows a soft warning (never a hard block — real admissions has
-    legitimate reasons to go over on paper: sibling priority, board
-    exceptions) when saving a Decision as "accepted" would put the accepted
-    count for that (year, grade) over this capacity. See
+    """Seats available per (academic_year, year_group, campus). Campus-scoped
+    since TCS's two campuses are physically separate seat pools — a null
+    campus means "not campus-specific" (e.g. a grade only ever offered at one
+    campus). Note: Postgres treats NULL as never equal to itself, so
+    unique_together doesn't stop two campus=NULL rows for the same
+    (year, grade) — acceptable for this table's scale (hand-managed by
+    admin staff), not worth a partial unique index.
+
+    ApplicationAdmin shows a soft warning (never a hard block — real
+    admissions has legitimate reasons to go over on paper: sibling priority,
+    board exceptions) when saving a Decision as "accepted" would put the
+    accepted count for that (year, grade, campus) over this capacity. See
     ApplicationAdmin._warn_if_over_capacity in admin.py."""
 
     academic_year = models.CharField(max_length=50)
     year_group = models.CharField(max_length=50)
+    campus = models.ForeignKey(
+        Campus, on_delete=models.PROTECT, null=True, blank=True, related_name="capacities",
+        help_text="Leave blank if this grade's capacity isn't campus-specific.",
+    )
     capacity = models.PositiveIntegerField()
 
     class Meta:
-        unique_together = ("academic_year", "year_group")
+        unique_together = ("academic_year", "year_group", "campus")
         verbose_name_plural = "capacities"
 
     def __str__(self):
-        return f"{self.year_group} {self.academic_year}: {self.capacity} seats"
+        campus_label = f" @ {self.campus}" if self.campus else ""
+        return f"{self.year_group} {self.academic_year}{campus_label}: {self.capacity} seats"
 
 
 class Document(models.Model):
@@ -427,6 +501,7 @@ class Document(models.Model):
         ("proof_of_vaccination", "Proof of Vaccination"),
         ("financial_clearance", "Proof of Financial Clearance from Previous School"),
         ("previous_report", "Report Card / Transcript from Previous School"),
+        ("application_fee_proof", "Proof of Application Fee Payment"),
         ("proof_of_funds", "Proof of Funds"),
         ("passport_photo", "Passport Photograph"),
         ("birth_certificate", "Birth Certificate"),
@@ -454,6 +529,81 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.get_document_type_display()} — {self.application}"
+
+
+class EmergencyContact(models.Model):
+    """Who to call in an emergency for this specific Application's student —
+    Application-scoped (not Student- or Family-scoped) so it shows up as an
+    inline on ApplicationAdmin alongside Decision/Offer/Document/Note, the
+    same page staff already use for everything else on a submission."""
+
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="emergency_contacts")
+    name = models.CharField(max_length=255)
+    relationship = models.CharField(max_length=100, help_text="Free text — e.g. aunt, family friend, grandmother")
+    phone = models.CharField(max_length=32)
+
+    def __str__(self):
+        return f"{self.name} ({self.relationship}) — {self.application}"
+
+
+class HealthInfo(models.Model):
+    """Real health data about a child — access restricted via the
+    admissions.can_view_health_info permission (see HealthInfoInline in
+    admin.py), not visible to every staff member who can view an Application
+    by default. Never surfaced in list_display, search_fields, or exports."""
+
+    application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name="health_info")
+
+    has_learning_or_physical_needs = models.BooleanField(default=False)
+    learning_or_physical_needs_details = models.TextField(blank=True, default="")
+
+    has_medical_conditions = models.BooleanField(default=False)
+    medical_conditions_details = models.TextField(blank=True, default="")
+
+    has_allergies_or_dietary_requirements = models.BooleanField(default=False)
+    allergies_dietary_details = models.TextField(blank=True, default="")
+
+    class Meta:
+        permissions = [("can_view_health_info", "Can view health/wellbeing info")]
+
+    def __str__(self):
+        return f"Health info — {self.application}"
+
+
+class ApplicationDraft(models.Model):
+    """A parent's in-progress Application, saved before there's a real
+    Student/Guardian/Application row to attach it to — the multi-step public
+    form can be genuinely incomplete/invalid at any point (no email yet, a
+    malformed date), so raw form state is kept as JSON rather than partial
+    real rows. Full validation only ever happens once, at final submit, via
+    the real ApplicationSerializer — one source of truth for what "valid"
+    means, not a second looser one for drafts.
+
+    The token is the sole access control, same trust model as Offer's resume
+    link — no parent login system exists. This is a deliberate stopgap, not
+    a replacement for one; see docs/admissions/01-vision.md."""
+
+    token = models.CharField(max_length=64, unique=True, default=_generate_draft_token)
+    email = models.EmailField(blank=True, default="", help_text="Captured once the guardian email step is filled in")
+    data = models.JSONField(default=dict, blank=True)
+    current_step = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(default=_default_draft_expiry)
+    submitted_application = models.ForeignKey(
+        Application, null=True, blank=True, on_delete=models.SET_NULL, related_name="draft",
+    )
+
+    def __str__(self):
+        return f"Draft ({self.email or 'no email yet'}) — step {self.current_step}"
+
+    @property
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    @property
+    def is_submitted(self):
+        return self.submitted_application_id is not None
 
 
 class Note(models.Model):
