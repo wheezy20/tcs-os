@@ -2,6 +2,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from . import emails, storage
@@ -10,6 +11,15 @@ from .serializers import (
     ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
     OfferResponseSerializer, UploadURLRequestSerializer,
 )
+
+
+class DraftRateThrottle(AnonRateThrottle):
+    """A separate, higher rate than the default "anon" scope — frequent
+    saves are the whole point of autosaving on every section change (Phase 5
+    free navigation), not something to guard against the way the real
+    submission endpoints' tight default rate is meant to. See
+    DRAFT_THROTTLE_RATE in settings.py."""
+    scope = "application_draft"
 
 
 class InquiryCreateView(generics.CreateAPIView):
@@ -69,6 +79,7 @@ class ApplicationDraftView(APIView):
     ApplicationDraft's own docstring for why raw JSON is stored rather than
     partial real rows."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [DraftRateThrottle]
 
     def post(self, request):
         serializer = ApplicationDraftSaveSerializer(data=request.data)
@@ -90,6 +101,7 @@ class ApplicationDraftDetailView(APIView):
     PATCH .../<token>/ — save progress against an existing draft (autosave
     between steps, or an explicit "save for later" click)."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [DraftRateThrottle]
 
     def get(self, request, token):
         draft = get_object_or_404(ApplicationDraft, token=token)

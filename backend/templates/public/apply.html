@@ -42,7 +42,7 @@
 
   main {
     width: 100%;
-    max-width: 640px;
+    max-width: 880px;
   }
 
   .brand-header {
@@ -72,31 +72,16 @@
     text-align: center;
   }
 
-  /* --- progress bar --- */
-  .progress-wrap {
-    margin-bottom: 1.25rem;
+  /* --- layout: form + section nav side by side --- */
+  .layout {
+    display: flex;
+    align-items: flex-start;
+    gap: 1.5rem;
   }
 
-  .progress-label {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-    margin-bottom: 0.4rem;
-    text-align: center;
-  }
-
-  .progress-track {
-    height: 6px;
-    background: var(--border);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-
-  .progress-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 4px;
-    transition: width 0.3s ease;
-    width: 0%;
+  .layout form {
+    flex: 1;
+    min-width: 0;
   }
 
   form {
@@ -104,6 +89,89 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 1.75rem;
+  }
+
+  /* --- section nav (desktop: sticky sidebar on the right) --- */
+  .section-nav {
+    flex: 0 0 210px;
+    position: sticky;
+    top: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .section-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-align: left;
+    color: var(--text);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .section-nav-item:hover {
+    border-color: var(--primary);
+  }
+
+  .section-nav-item.active {
+    border-color: var(--primary);
+    background: var(--bg);
+  }
+
+  .section-nav-dot {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    line-height: 1;
+    color: transparent;
+  }
+
+  .section-nav-item.complete .section-nav-dot {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .section-nav-item.complete .section-nav-dot::after {
+    content: "\2713";
+  }
+
+  @media (max-width: 860px) {
+    .layout {
+      flex-direction: column;
+    }
+
+    .section-nav {
+      order: -1;
+      position: static;
+      flex: 0 0 auto; /* .layout is column now — the desktop rule's 210px would otherwise fix this as a *height* */
+      flex-direction: row;
+      width: 100%;
+      overflow-x: auto;
+      padding-bottom: 0.35rem;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .section-nav-item {
+      flex: 0 0 auto;
+      width: auto;
+      white-space: nowrap;
+    }
   }
 
   fieldset {
@@ -460,11 +528,7 @@
 
   <div id="form-message" class="message" role="status" aria-live="polite"></div>
 
-  <div class="progress-wrap">
-    <div class="progress-label" id="progress-label">Step 1 of 6: Parent / Guardian information</div>
-    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-  </div>
-
+  <div class="layout">
   <form id="application-form" novalidate>
 
     <!-- Step 0: Guardian(s) -->
@@ -916,6 +980,16 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       <button type="button" id="save-later-btn" class="link-btn subtle">Save &amp; finish later</button>
     </div>
   </form>
+
+  <nav class="section-nav" id="section-nav" aria-label="Application sections">
+    <button type="button" class="section-nav-item" data-step="0"><span class="section-nav-dot"></span> Guardian(s)</button>
+    <button type="button" class="section-nav-item" data-step="1"><span class="section-nav-dot"></span> Student</button>
+    <button type="button" class="section-nav-item" data-step="2"><span class="section-nav-dot"></span> Emergency</button>
+    <button type="button" class="section-nav-item" data-step="3"><span class="section-nav-dot"></span> Health</button>
+    <button type="button" class="section-nav-item" data-step="4"><span class="section-nav-dot"></span> Documents</button>
+    <button type="button" class="section-nav-item" data-step="5"><span class="section-nav-dot"></span> Declaration</button>
+  </nav>
+  </div>
 </main>
 
 <script>
@@ -927,8 +1001,7 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   const backBtn = document.getElementById("back-btn");
   const saveLaterBtn = document.getElementById("save-later-btn");
   const messageBox = document.getElementById("form-message");
-  const progressFill = document.getElementById("progress-fill");
-  const progressLabel = document.getElementById("progress-label");
+  const sectionNav = document.getElementById("section-nav");
   const addGuardianBtn = document.getElementById("add-guardian-btn");
   const removeGuardianBtn = document.getElementById("remove-guardian-btn");
   const guardianBlock1 = document.getElementById("guardian-block-1");
@@ -954,6 +1027,19 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Declaration",
   ];
 
+  // Maps a server validation error's top-level key to the step it belongs to,
+  // so a 400 response can jump the parent straight to the offending section
+  // instead of leaving them on whichever step they happened to submit from.
+  function stepForErrorKey(key) {
+    if (key === "guardians") return 0;
+    if (key === "student" || key === "campus") return 1;
+    if (key === "emergency_contact") return 2;
+    if (key === "health_info") return 3;
+    if (key === "documents" || key === "wants_scholarship_info" || key === "scholarship_interest_details") return 4;
+    if (key.startsWith("declaration") || key === "media_consent_agreed") return 5;
+    return null;
+  }
+
   const PRESCHOOL_GRADES = new Set([
     "Pre Nursery", "Nursery 1", "Nursery 2", "Kindergarten 1", "Kindergarten 2",
   ]);
@@ -977,10 +1063,16 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   document.getElementById("student_current_grade").innerHTML = gradeOptionsHtml(CURRENT_GRADE_OPTIONS);
   targetGradeSelect.innerHTML = gradeOptionsHtml(TARGET_GRADE_OPTIONS);
 
-  // ================= step navigation =================
+  // ================= free navigation between sections =================
+  // No forced order and no mid-form validation blocking — leaving a section
+  // incomplete is allowed by design, same spirit as the draft/resume system:
+  // fill in what you have now, come back for the rest later. Completeness is
+  // only ever checked (a) to render the sidebar's checkmarks and (b) at
+  // final submit, where everything is checked at once.
   let currentStep = 0;
+  const sectionNavItems = Array.from(document.querySelectorAll(".section-nav-item"));
 
-  function showStep(n) {
+  function renderStep(n) {
     currentStep = n;
     document.querySelectorAll(".form-step").forEach((el) => {
       el.hidden = parseInt(el.dataset.step, 10) !== n;
@@ -988,49 +1080,79 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     backBtn.hidden = n === 0;
     nextBtn.hidden = n === TOTAL_STEPS - 1;
     submitBtn.hidden = n !== TOTAL_STEPS - 1;
-    progressFill.style.width = `${((n + 1) / TOTAL_STEPS) * 100}%`;
-    progressLabel.textContent = `Step ${n + 1} of ${TOTAL_STEPS}: ${STEP_LABELS[n]}`;
+    sectionNavItems.forEach((item) => {
+      item.classList.toggle("active", parseInt(item.dataset.step, 10) === n);
+    });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function validateCurrentStepRequiredFields() {
-    const stepEl = document.querySelector(`.form-step[data-step="${currentStep}"]`);
-    const requiredInputs = stepEl.querySelectorAll("input[required], select[required], textarea[required]");
-    for (const el of requiredInputs) {
-      if (el.closest("[hidden]") === stepEl.parentElement) continue; // skip if some ancestor besides the step itself is hidden — n/a here
-      if (el.offsetParent === null && el.type !== "hidden") continue; // element itself not visible (e.g. an un-toggled "other" input)
-      if (el.type === "radio") {
-        const checked = stepEl.querySelector(`input[name="${el.name}"]:checked`);
-        if (!checked) return `Please answer: ${el.closest(".field").querySelector("label").textContent.replace("*", "").trim()}`;
-        continue;
-      }
-      if (el.type === "checkbox") {
-        if (!el.checked) return "Please check all required boxes before continuing.";
-        continue;
-      }
-      if (!el.value || !el.value.trim()) {
-        const label = el.closest(".field")?.querySelector("label")?.textContent?.replace("*", "").trim() || "a required field";
-        return `Please fill in: ${label}`;
-      }
+  // The single entry point for every kind of navigation (sidebar click,
+  // Next, Back) — autosaves wherever the parent is leaving from, in either
+  // direction, before switching sections.
+  async function goToStep(n) {
+    if (n < 0 || n >= TOTAL_STEPS || n === currentStep) return;
+    const saved = await saveDraft(false);
+    renderStep(n);
+    if (!saved) {
+      showMessage(
+        "Your progress on this page is fine, but the last autosave didn't reach the server — "
+        + "if you close this tab now you may lose it. Try moving between sections again in a moment.",
+        "error"
+      );
     }
-    return null;
   }
 
-  nextBtn.addEventListener("click", async () => {
-    const error = validateCurrentStepRequiredFields();
-    if (error) {
-      showMessage(error, "error");
-      return;
-    }
+  sectionNavItems.forEach((item) => {
+    item.addEventListener("click", () => {
+      clearMessages();
+      goToStep(parseInt(item.dataset.step, 10));
+    });
+  });
+
+  nextBtn.addEventListener("click", () => {
     clearMessages();
-    await saveDraft(false);
-    showStep(currentStep + 1);
+    goToStep(currentStep + 1);
   });
 
   backBtn.addEventListener("click", () => {
     clearMessages();
-    showStep(currentStep - 1);
+    goToStep(currentStep - 1);
   });
+
+  // Required-but-empty is fine mid-form (see the file-level comment above);
+  // `hidden` (not offsetParent) is what to check, deliberately — an
+  // un-toggled "other" input or an un-revealed yes/no detail textarea sets
+  // `.hidden` on itself directly, whereas offsetParent would also read null
+  // for every field in any step OTHER than the currently-visible one, which
+  // is exactly the case this needs to check correctly (the sidebar reports
+  // completeness for all 6 steps, not just whichever one is on screen).
+  function isStepComplete(n) {
+    const stepEl = document.querySelector(`.form-step[data-step="${n}"]`);
+    const requiredEls = stepEl.querySelectorAll("input[required], select[required], textarea[required]");
+    for (const el of requiredEls) {
+      if (el.hidden) continue;
+      if (el.type === "radio") {
+        if (!stepEl.querySelector(`input[name="${el.name}"]:checked`)) return false;
+        continue;
+      }
+      if (el.type === "checkbox") {
+        if (!el.checked) return false;
+        continue;
+      }
+      if (!el.value || !el.value.trim()) return false;
+    }
+    return true;
+  }
+
+  function updateSidebarCompletion() {
+    sectionNavItems.forEach((item) => {
+      const n = parseInt(item.dataset.step, 10);
+      item.classList.toggle("complete", isStepComplete(n));
+    });
+  }
+
+  form.addEventListener("input", updateSidebarCompletion);
+  form.addEventListener("change", updateSidebarCompletion);
 
   // ================= second guardian toggle =================
   addGuardianBtn.addEventListener("click", () => {
@@ -1367,28 +1489,45 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
 
   async function ensureDraftToken() {
     if (draftToken) return draftToken;
-    const resp = await fetch(`${API_BASE}/application-drafts/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: {}, current_step: 0 }),
-    });
-    const body = await resp.json();
-    draftToken = body.token;
-    return draftToken;
+    try {
+      const resp = await fetch(`${API_BASE}/application-drafts/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: {}, current_step: 0 }),
+      });
+      if (!resp.ok) return null;
+      const body = await resp.json();
+      draftToken = body.token;
+      return draftToken;
+    } catch (err) {
+      return null;
+    }
   }
 
+  // Returns true/false rather than throwing, so every caller (section
+  // navigation, "save for later", final submit) can react to a failed save
+  // instead of the previous behavior of assuming it always worked — fetch()
+  // doesn't reject on a non-2xx response, only on a network failure, so this
+  // used to report success even on e.g. a throttled 429.
   async function saveDraft(sendEmail) {
-    await ensureDraftToken();
+    const token = await ensureDraftToken();
+    if (!token) return false;
+
     const payload = collectPayload();
     const email = payload.guardians[0]?.email || "";
     const body = { email, data: payload, current_step: currentStep };
     if (sendEmail) body.send_email = true;
 
-    await fetch(`${API_BASE}/application-drafts/${draftToken}/`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    try {
+      const resp = await fetch(`${API_BASE}/application-drafts/${token}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return resp.ok;
+    } catch (err) {
+      return false;
+    }
   }
 
   saveLaterBtn.addEventListener("click", async () => {
@@ -1402,10 +1541,12 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     saveLaterBtn.disabled = true;
     saveLaterBtn.textContent = "Saving…";
     try {
-      await saveDraft(true);
-      showMessage(`Progress saved. We've emailed a link to ${email} so you can finish later.`, "success");
-    } catch (err) {
-      showMessage("Could not save your progress right now. Please try again.", "error");
+      const saved = await saveDraft(true);
+      if (saved) {
+        showMessage(`Progress saved. We've emailed a link to ${email} so you can finish later.`, "success");
+      } else {
+        showMessage("Could not save your progress right now. Please try again in a moment.", "error");
+      }
     } finally {
       saveLaterBtn.disabled = false;
       saveLaterBtn.textContent = "Save & finish later";
@@ -1423,7 +1564,8 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       }
       const body = await resp.json();
       populateForm(body.data || {});
-      showStep(body.current_step || 0);
+      renderStep(body.current_step || 0);
+      updateSidebarCompletion();
       showMessage("Welcome back — your saved progress has been restored.", "info");
     } catch (err) {
       showMessage("Could not load your saved application. Starting fresh.", "error");
@@ -1571,14 +1713,45 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     });
   }
 
+  // Final-submit-only check (never blocks mid-form navigation) — names every
+  // incomplete section and links straight back to each one, rather than a
+  // generic "something's wrong" message.
+  function showIncompleteSummary(steps) {
+    messageBox.innerHTML = "";
+    const intro = document.createElement("p");
+    intro.style.margin = "0 0 0.5rem 0";
+    intro.textContent = "Please complete the following section(s) before submitting:";
+    messageBox.appendChild(intro);
+
+    const list = document.createElement("ul");
+    list.style.margin = "0";
+    list.style.paddingLeft = "1.2rem";
+    steps.forEach((n) => {
+      const li = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "link-btn";
+      link.textContent = STEP_LABELS[n];
+      link.addEventListener("click", () => goToStep(n));
+      li.appendChild(link);
+      list.appendChild(li);
+    });
+    messageBox.appendChild(list);
+    messageBox.className = "message visible error";
+    messageBox.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // ================= final submit =================
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearMessages();
 
-    const error = validateCurrentStepRequiredFields();
-    if (error) {
-      showMessage(error, "error");
+    const incompleteSteps = [];
+    for (let n = 0; n < TOTAL_STEPS; n++) {
+      if (!isStepComplete(n)) incompleteSteps.push(n);
+    }
+    if (incompleteSteps.length > 0) {
+      showIncompleteSummary(incompleteSteps);
       return;
     }
     if (pendingUploads > 0) {
@@ -1590,7 +1763,13 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     submitBtn.textContent = "Submitting…";
 
     try {
-      await saveDraft(false);
+      const saved = await saveDraft(false);
+      if (!saved) {
+        showMessage("Could not save your latest changes before submitting. Please try again in a moment.", "error");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit application";
+        return;
+      }
       const response = await fetch(`${API_BASE}/application-drafts/${draftToken}/submit/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1619,6 +1798,16 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
               : "Please correct the highlighted fields and try again.",
             "error"
           );
+          // Jump to the first section a server-side error actually belongs
+          // to, so the parent lands somewhere useful instead of wherever
+          // they happened to click submit from.
+          const affectedSteps = Object.keys(errorData)
+            .map(stepForErrorKey)
+            .filter((n) => n !== null)
+            .sort((a, b) => a - b);
+          if (affectedSteps.length > 0 && affectedSteps[0] !== currentStep) {
+            renderStep(affectedSteps[0]);
+          }
         } else if (response.status === 429) {
           showMessage("Too many submissions. Please try again later.", "error");
         } else {
@@ -1638,7 +1827,8 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   if (draftToken) {
     loadDraft(draftToken);
   } else {
-    showStep(0);
+    renderStep(0);
+    updateSidebarCompletion();
   }
 </script>
 </body>

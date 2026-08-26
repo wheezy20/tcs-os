@@ -504,17 +504,46 @@ login/portal — flagged as a known future need in `01-vision.md`.
 
 ### Frontend
 
-`application.html` rebuilt as a 6-step form (Guardian(s) → Student →
-Emergency Contact → Health/Wellbeing → Documents & Payment → Declaration)
-with a progress bar and Next/Back navigation, still fully dependency-free
-(no build step, no framework) — step visibility is plain JS show/hide over
-what were already fieldsets. The student's "same address as guardian"
-checkbox defaults **checked** (opposite of guardian 2's own equivalent
-checkbox, which defaults unchecked) — most students live with guardian 1, so
-default to that and let the parent uncheck if different. Only `address`/
-`town_city` are copied from guardian 1; `postal_code`/`country` have no
-guardian-side equivalent to copy from, so they stay independently editable
-regardless of the checkbox.
+`application.html` rebuilt as a 6-section form (Guardian(s) → Student →
+Emergency Contact → Health/Wellbeing → Documents & Payment → Declaration),
+still fully dependency-free (no build step, no framework) — section
+visibility is plain JS show/hide over what were already fieldsets. The
+student's "same address as guardian" checkbox defaults **checked** (opposite
+of guardian 2's own equivalent checkbox, which defaults unchecked) — most
+students live with guardian 1, so default to that and let the parent
+uncheck if different. Only `address`/`town_city` are copied from guardian 1;
+`postal_code`/`country` have no guardian-side equivalent to copy from, so
+they stay independently editable regardless of the checkbox.
+
+**Navigation is free, not linear** (a follow-up the same day): a sidebar
+(desktop, sticky) / horizontal scrollable bar (mobile, pinned above the
+form) lists all 6 sections, each showing a checkmark once its required
+fields are filled — clickable in any order, with no mid-form validation
+blocking, consistent with the draft/resume system's own premise. `goToStep()`
+is the one entry point for every kind of navigation and autosaves in both
+directions. Completeness is computed per-section via `isStepComplete()`,
+checked against `el.hidden` rather than `el.offsetParent === null` — the
+latter reads `null` for every field inside *any* non-visible section, not
+just a deliberately-hidden one, which would have made every section but the
+current one falsely report complete. Final submit checks every section at
+once and, if incomplete, shows exactly which ones with a jump-back link
+per section — server-side 400s get the same treatment, mapped from error
+key to section (`stepForErrorKey`) so a validation failure lands the parent
+somewhere useful.
+
+Two real bugs surfaced by testing this, not before: the shared
+`AnonRateThrottle` (20/hour) started 429ing during testing since free
+navigation autosaves far more often than the old fixed linear flow did —
+`saveDraft()` also never checked its response status, so a throttled or
+failed save silently reported success. Fixed with a dedicated
+`DraftRateThrottle` (`application_draft` scope, 120/hour) on just the
+create/save-progress endpoints — not final submit, which keeps the tight
+default anti-abuse rate — and `saveDraft()`/`ensureDraftToken()` now return
+`true`/`false` so a failure is actually shown. Separately, the sidebar's
+desktop-only `flex: 0 0 210px` (fixing its *width*) was never reset for
+mobile, where `.layout` switches to `flex-direction: column` — the same
+rule then fixed the nav's *height* at 210px, rendering six huge stacked
+boxes instead of a compact strip; caught from an actual mobile screenshot.
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 

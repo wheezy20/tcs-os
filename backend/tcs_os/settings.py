@@ -149,6 +149,12 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "20/hour",
+        # Draft save/resume (Phase 5's free section navigation autosaves on
+        # every jump, not just "Next") is meant to be called often — this
+        # exists to guard the real submission endpoints from abuse, not to
+        # throttle normal use of the thing it was built for. See
+        # admissions.views.DraftRateThrottle.
+        "application_draft": "120/hour",
     },
 }
 
