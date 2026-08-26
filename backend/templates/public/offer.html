@@ -155,17 +155,50 @@
   <div class="card">
     <div id="pre-response">
       <p>Click below to respond to this offer.</p>
+      <div id="turnstile-widget"></div>
       <div class="button-row">
-        <button type="button" id="accept-btn">Accept</button>
-        <button type="button" id="decline-btn">Decline</button>
+        <button type="button" id="accept-btn" disabled>Accept</button>
+        <button type="button" id="decline-btn" disabled>Decline</button>
       </div>
     </div>
     <div id="form-message" class="message" role="status" aria-live="polite"></div>
   </div>
 </main>
 
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <script>
   const API_BASE = "/api/admissions";
+  // Cloudflare's published "always passes" test sitekey — this file is only
+  // used for local static-file preview outside Django (see
+  // backend/tcs_os/urls.py, which renders the real TURNSTILE_SITE_KEY into
+  // templates/public/offer.html instead). Never a real site's key.
+  const TURNSTILE_SITE_KEY = "{{ TURNSTILE_SITE_KEY }}";
+
+  // #turnstile-widget deliberately has no "cf-turnstile" class — see the
+  // matching comment in index.html/application.html for why (implicit
+  // auto-render wins the race and never wires up the callback below).
+  let turnstileToken = "";
+  function renderTurnstileWidget() {
+    if (typeof turnstile === "undefined") { setTimeout(renderTurnstileWidget, 200); return; }
+    turnstile.render("#turnstile-widget", {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token) => {
+        turnstileToken = token;
+        acceptBtn.disabled = false;
+        declineBtn.disabled = false;
+      },
+      "expired-callback": () => {
+        turnstileToken = "";
+        acceptBtn.disabled = true;
+        declineBtn.disabled = true;
+      },
+      "error-callback": () => {
+        turnstileToken = "";
+        acceptBtn.disabled = true;
+        declineBtn.disabled = true;
+      },
+    });
+  }
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token");
 
@@ -173,6 +206,7 @@
   const messageBox = document.getElementById("form-message");
   const acceptBtn = document.getElementById("accept-btn");
   const declineBtn = document.getElementById("decline-btn");
+  renderTurnstileWidget();
 
   function showMessage(text, type) {
     messageBox.textContent = text;
@@ -186,6 +220,10 @@
   }
 
   async function respond(response) {
+    if (!turnstileToken) {
+      showMessage("Please complete the verification challenge before responding.", "error");
+      return;
+    }
     acceptBtn.disabled = true;
     declineBtn.disabled = true;
 
@@ -193,10 +231,14 @@
       const resp = await fetch(`${API_BASE}/offers/${encodeURIComponent(token)}/respond/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ response }),
+        body: JSON.stringify({ response, turnstile_token: turnstileToken }),
       });
 
       const data = await resp.json().catch(() => ({}));
+      // Single-use token — reset regardless of outcome so a retry doesn't
+      // get rejected with "token already spent".
+      turnstile.reset();
+      turnstileToken = "";
 
       if (resp.ok) {
         preResponse.hidden = true;
@@ -207,9 +249,11 @@
           "success"
         );
       } else {
-        showMessage(data.detail || "Something went wrong. Please try again or contact admissions.", "error");
-        acceptBtn.disabled = false;
-        declineBtn.disabled = false;
+        const message = data.detail || (data.turnstile_token && data.turnstile_token[0])
+          || "Something went wrong. Please try again or contact admissions.";
+        showMessage(message, "error");
+        acceptBtn.disabled = true; // re-enabled by the callback once a fresh token is solved
+        declineBtn.disabled = true;
       }
     } catch (err) {
       showMessage("Could not reach the server. Please check your connection and try again.", "error");

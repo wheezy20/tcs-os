@@ -517,6 +517,7 @@
     display: block;
   }
 </style>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
 <main>
@@ -700,7 +701,7 @@
 
         <div class="field">
           <label for="student_nationality">Nationality <span class="required">*</span></label>
-          <input type="text" id="student_nationality" required />
+          <select id="student_nationality" required></select>
           <div class="field-error" data-error-for="student.nationality"></div>
         </div>
 
@@ -768,13 +769,13 @@
             <label for="student_academic_year">Academic year applying for <span class="required">*</span></label>
             <select id="student_academic_year" data-other-toggle="student_academic_year_other" required>
               <option value="" disabled selected>Select one</option>
-              <option value="2026">2026</option>
-              <option value="2027">2027</option>
-              <option value="2028">2028</option>
-              <option value="2029">2029</option>
-              <option value="2030">2030</option>
-              <option value="2031">2031</option>
-              <option value="2032">2032</option>
+              <option value="2026/2027">2026/2027</option>
+              <option value="2027/2028">2027/2028</option>
+              <option value="2028/2029">2028/2029</option>
+              <option value="2029/2030">2029/2030</option>
+              <option value="2030/2031">2030/2031</option>
+              <option value="2031/2032">2031/2032</option>
+              <option value="2032/2033">2032/2033</option>
               <option value="other">Other</option>
             </select>
             <input type="text" id="student_academic_year_other" class="other-input" placeholder="Please specify" hidden />
@@ -969,6 +970,9 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
           <input type="text" id="declaration_signature_name" required />
           <div class="field-error" data-error-for="declaration_signature_name"></div>
         </div>
+
+        <div id="turnstile-widget" style="margin-top: 1.5rem;"></div>
+        <div class="field-error" data-error-for="turnstile_token"></div>
       </fieldset>
     </div>
 
@@ -995,6 +999,28 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
 
 <script>
   const API_BASE = "/api/admissions";
+  // Cloudflare's published "always passes" test sitekey — this file is only
+  // used for local static-file preview outside Django (see
+  // backend/tcs_os/urls.py, which renders the real TURNSTILE_SITE_KEY into
+  // templates/public/apply.html instead). Never a real site's key.
+  const TURNSTILE_SITE_KEY = "{{ TURNSTILE_SITE_KEY }}";
+  // #turnstile-widget deliberately has no "cf-turnstile" class — see the
+  // matching comment in index.html for why (implicit auto-render wins the
+  // race and never wires up the callback below).
+  let turnstileToken = "";
+  let turnstileRendered = false;
+  function renderTurnstileWidget() {
+    if (turnstileRendered) return;
+    if (typeof turnstile === "undefined") { setTimeout(renderTurnstileWidget, 200); return; }
+    turnstileRendered = true;
+    turnstile.render("#turnstile-widget", {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token) => { turnstileToken = token; },
+      "expired-callback": () => { turnstileToken = ""; },
+      "error-callback": () => { turnstileToken = ""; },
+    });
+  }
+
   const TOTAL_STEPS = 6;
   const form = document.getElementById("application-form");
   const submitBtn = document.getElementById("submit-btn");
@@ -1064,6 +1090,278 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   document.getElementById("student_current_grade").innerHTML = gradeOptionsHtml(CURRENT_GRADE_OPTIONS);
   targetGradeSelect.innerHTML = gradeOptionsHtml(TARGET_GRADE_OPTIONS);
 
+  // ISO 3166-1 country names (249 entries: countries plus dependent/special
+  // territories), Ghana pinned first since the large majority of applicants
+  // are Ghanaian, the rest alphabetical. Source: lukes/ISO-3166-Countries-
+  // with-Regional-Codes on GitHub (built from ISO 3166-1 + Wikipedia), fetched
+  // directly rather than hand-typed to avoid a transcription error somewhere
+  // in 249 entries. A handful of ISO's official long-form names were swapped
+  // for their common name (e.g. "Korea, Republic of" -> "South Korea",
+  // "Viet Nam" -> "Vietnam") since this is a parent-facing field, not a
+  // technical one. A few entries (Antarctica, uninhabited territories) aren't
+  // really "nationalities" in the everyday sense, but trimming the list
+  // further would mean hand-picking a cutoff with no objective line — kept
+  // it complete otherwise.
+  const NATIONALITY_OPTIONS = [
+    "Ghana",
+    "Afghanistan",
+    "Albania",
+    "Algeria",
+    "American Samoa",
+    "Andorra",
+    "Angola",
+    "Anguilla",
+    "Antarctica",
+    "Antigua and Barbuda",
+    "Argentina",
+    "Armenia",
+    "Aruba",
+    "Australia",
+    "Austria",
+    "Azerbaijan",
+    "Bahamas",
+    "Bahrain",
+    "Bangladesh",
+    "Barbados",
+    "Belarus",
+    "Belgium",
+    "Belize",
+    "Benin",
+    "Bermuda",
+    "Bhutan",
+    "Bolivia",
+    "Bonaire, Sint Eustatius and Saba",
+    "Bosnia and Herzegovina",
+    "Botswana",
+    "Bouvet Island",
+    "Brazil",
+    "British Indian Ocean Territory",
+    "Brunei",
+    "Bulgaria",
+    "Burkina Faso",
+    "Burundi",
+    "Cabo Verde",
+    "Cambodia",
+    "Cameroon",
+    "Canada",
+    "Cayman Islands",
+    "Central African Republic",
+    "Chad",
+    "Chile",
+    "China",
+    "Christmas Island",
+    "Cocos (Keeling) Islands",
+    "Colombia",
+    "Comoros",
+    "Congo",
+    "Cook Islands",
+    "Costa Rica",
+    "Croatia",
+    "Cuba",
+    "Curaçao",
+    "Cyprus",
+    "Czechia",
+    "Côte d'Ivoire",
+    "Democratic Republic of the Congo",
+    "Denmark",
+    "Djibouti",
+    "Dominica",
+    "Dominican Republic",
+    "Ecuador",
+    "Egypt",
+    "El Salvador",
+    "Equatorial Guinea",
+    "Eritrea",
+    "Estonia",
+    "Eswatini",
+    "Ethiopia",
+    "Falkland Islands (Malvinas)",
+    "Faroe Islands",
+    "Fiji",
+    "Finland",
+    "France",
+    "French Guiana",
+    "French Polynesia",
+    "French Southern Territories",
+    "Gabon",
+    "Gambia",
+    "Georgia",
+    "Germany",
+    "Gibraltar",
+    "Greece",
+    "Greenland",
+    "Grenada",
+    "Guadeloupe",
+    "Guam",
+    "Guatemala",
+    "Guernsey",
+    "Guinea",
+    "Guinea-Bissau",
+    "Guyana",
+    "Haiti",
+    "Heard Island and McDonald Islands",
+    "Holy See",
+    "Honduras",
+    "Hong Kong",
+    "Hungary",
+    "Iceland",
+    "India",
+    "Indonesia",
+    "Iran",
+    "Iraq",
+    "Ireland",
+    "Isle of Man",
+    "Israel",
+    "Italy",
+    "Jamaica",
+    "Japan",
+    "Jersey",
+    "Jordan",
+    "Kazakhstan",
+    "Kenya",
+    "Kiribati",
+    "Kuwait",
+    "Kyrgyzstan",
+    "Laos",
+    "Latvia",
+    "Lebanon",
+    "Lesotho",
+    "Liberia",
+    "Libya",
+    "Liechtenstein",
+    "Lithuania",
+    "Luxembourg",
+    "Macao",
+    "Madagascar",
+    "Malawi",
+    "Malaysia",
+    "Maldives",
+    "Mali",
+    "Malta",
+    "Marshall Islands",
+    "Martinique",
+    "Mauritania",
+    "Mauritius",
+    "Mayotte",
+    "Mexico",
+    "Micronesia",
+    "Moldova",
+    "Monaco",
+    "Mongolia",
+    "Montenegro",
+    "Montserrat",
+    "Morocco",
+    "Mozambique",
+    "Myanmar",
+    "Namibia",
+    "Nauru",
+    "Nepal",
+    "Netherlands",
+    "New Caledonia",
+    "New Zealand",
+    "Nicaragua",
+    "Niger",
+    "Nigeria",
+    "Niue",
+    "Norfolk Island",
+    "North Korea",
+    "North Macedonia",
+    "Northern Mariana Islands",
+    "Norway",
+    "Oman",
+    "Pakistan",
+    "Palau",
+    "Palestine",
+    "Panama",
+    "Papua New Guinea",
+    "Paraguay",
+    "Peru",
+    "Philippines",
+    "Pitcairn",
+    "Poland",
+    "Portugal",
+    "Puerto Rico",
+    "Qatar",
+    "Romania",
+    "Russia",
+    "Rwanda",
+    "Réunion",
+    "Saint Barthélemy",
+    "Saint Helena, Ascension and Tristan da Cunha",
+    "Saint Kitts and Nevis",
+    "Saint Lucia",
+    "Saint Martin (French part)",
+    "Saint Pierre and Miquelon",
+    "Saint Vincent and the Grenadines",
+    "Samoa",
+    "San Marino",
+    "Sao Tome and Principe",
+    "Saudi Arabia",
+    "Senegal",
+    "Serbia",
+    "Seychelles",
+    "Sierra Leone",
+    "Singapore",
+    "Sint Maarten (Dutch part)",
+    "Slovakia",
+    "Slovenia",
+    "Solomon Islands",
+    "Somalia",
+    "South Africa",
+    "South Georgia and the South Sandwich Islands",
+    "South Korea",
+    "South Sudan",
+    "Spain",
+    "Sri Lanka",
+    "Sudan",
+    "Suriname",
+    "Svalbard and Jan Mayen",
+    "Sweden",
+    "Switzerland",
+    "Syria",
+    "Taiwan",
+    "Tajikistan",
+    "Tanzania",
+    "Thailand",
+    "Timor-Leste",
+    "Togo",
+    "Tokelau",
+    "Tonga",
+    "Trinidad and Tobago",
+    "Tunisia",
+    "Turkmenistan",
+    "Turks and Caicos Islands",
+    "Tuvalu",
+    "Türkiye",
+    "Uganda",
+    "Ukraine",
+    "United Arab Emirates",
+    "United Kingdom",
+    "United States",
+    "United States Minor Outlying Islands",
+    "Uruguay",
+    "Uzbekistan",
+    "Vanuatu",
+    "Venezuela",
+    "Vietnam",
+    "Virgin Islands (British)",
+    "Virgin Islands (U.S.)",
+    "Wallis and Futuna",
+    "Western Sahara",
+    "Yemen",
+    "Zambia",
+    "Zimbabwe",
+    "Åland Islands",
+  ];
+
+  function nationalityOptionsHtml() {
+    return (
+      '<option value="" disabled selected>Select one</option>' +
+      NATIONALITY_OPTIONS.map((n) => `<option value="${n}">${n}</option>`).join("")
+    );
+  }
+  document.getElementById("student_nationality").innerHTML = nationalityOptionsHtml();
+
   // ================= free navigation between sections =================
   // No forced order and no mid-form validation blocking — leaving a section
   // incomplete is allowed by design, same spirit as the draft/resume system:
@@ -1072,6 +1370,26 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   // final submit, where everything is checked at once.
   let currentStep = 0;
   const sectionNavItems = Array.from(document.querySelectorAll(".section-nav-item"));
+
+  // Set once the application has actually been created server-side.
+  // Previously only next/submit/back got disabled on success — the sidebar
+  // nav and "Save & finish later" stayed clickable, so a parent who wasn't
+  // sure the slow submit had worked could click around afterward and hit a
+  // real 400 ("This application has already been submitted") from
+  // autosave/save-for-later PATCHing an already-submitted draft, surfaced as
+  // a confusing "Could not save your progress" error. Confirmed in
+  // production logs: two such 400s minutes after a real successful submit.
+  let applicationSubmitted = false;
+  function lockFormAsSubmitted() {
+    if (applicationSubmitted) return;
+    applicationSubmitted = true;
+    nextBtn.disabled = true;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Application submitted";
+    backBtn.disabled = true;
+    saveLaterBtn.disabled = true;
+    sectionNavItems.forEach((item) => { item.disabled = true; });
+  }
 
   function renderStep(n) {
     currentStep = n;
@@ -1084,6 +1402,11 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     sectionNavItems.forEach((item) => {
       item.classList.toggle("active", parseInt(item.dataset.step, 10) === n);
     });
+    // Rendered lazily, only once the Declaration step is actually visible —
+    // Cloudflare's widget iframe doesn't size itself correctly if rendered
+    // into a [hidden] (display:none) container, which every step but the
+    // first is at page load.
+    if (n === TOTAL_STEPS - 1) renderTurnstileWidget();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -1091,6 +1414,7 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   // Next, Back) — autosaves wherever the parent is leaving from, in either
   // direction, before switching sections.
   async function goToStep(n) {
+    if (applicationSubmitted) return;
     if (n < 0 || n >= TOTAL_STEPS || n === currentStep) return;
     const saved = await saveDraft(false);
     renderStep(n);
@@ -1536,6 +1860,10 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   // doesn't reject on a non-2xx response, only on a network failure, so this
   // used to report success even on e.g. a throttled 429.
   async function saveDraft(sendEmail) {
+    // Nothing left to save once the application is actually created — and
+    // trying would just get a 400 back (see lockFormAsSubmitted's comment).
+    if (applicationSubmitted) return true;
+
     const token = await ensureDraftToken();
     if (!token) return false;
 
@@ -1550,6 +1878,17 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!resp.ok) {
+        // Defense in depth: if this ever happens anyway (e.g. a stale second
+        // tab left open after submitting from another one), treat the
+        // server confirming "already submitted" as good news, not a
+        // failure — lock the form instead of reporting a scary save error.
+        const errBody = await resp.json().catch(() => ({}));
+        if (typeof errBody.detail === "string" && errBody.detail.includes("already been submitted")) {
+          lockFormAsSubmitted();
+          return true;
+        }
+      }
       return resp.ok;
     } catch (err) {
       return false;
@@ -1626,7 +1965,13 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     setVal("student_full_name", s.full_name);
     if (s.date_of_birth) document.getElementById("student_dob").value = isoToDMY(s.date_of_birth);
     setVal("student_gender", s.gender);
-    setVal("student_nationality", s.nationality);
+    // Nationality used to be free text — a draft saved before this dropdown
+    // existed can hold a value (e.g. "Ghanaian", a demonym rather than a
+    // country name) that won't match any <option>, which would silently
+    // leave the field blank on resume. Only fixup actually seen in this
+    // system's real data; not a general demonym translator.
+    const LEGACY_NATIONALITY_FIXUPS = { "Ghanaian": "Ghana" };
+    setVal("student_nationality", LEGACY_NATIONALITY_FIXUPS[s.nationality] || s.nationality);
     setVal("student_current_school", s.current_school);
     setVal("student_previous_school_location", s.previous_school_location);
     setVal("student_postal_code", s.postal_code);
@@ -1784,9 +2129,22 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       showMessage("Please wait for document uploads to finish before submitting.", "error");
       return;
     }
+    if (!turnstileToken) {
+      showMessage("Please complete the verification challenge on the Declaration section before submitting.", "error");
+      renderStep(TOTAL_STEPS - 1);
+      return;
+    }
 
     submitBtn.disabled = true;
     submitBtn.textContent = "Submitting…";
+    // A real submission takes several seconds (server-side email sends are
+    // synchronous — see docs/admissions/02-stack-and-schema.md) — reassure
+    // rather than leave a bare "Submitting…" sitting long enough to look
+    // stuck, which is exactly what was reported: the backend had already
+    // succeeded while the parent had no sign anything was still happening.
+    const reassureTimer = setTimeout(() => {
+      submitBtn.textContent = "Still submitting — this can take up to 15 seconds…";
+    }, 4000);
 
     try {
       const saved = await saveDraft(false);
@@ -1799,8 +2157,12 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       const response = await fetch(`${API_BASE}/application-drafts/${draftToken}/submit/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ turnstile_token: turnstileToken }),
       });
+      // Single-use token — reset regardless of outcome so a retry doesn't
+      // get rejected with "token already spent".
+      if (typeof turnstile !== "undefined" && turnstileRendered) turnstile.reset();
+      turnstileToken = "";
 
       if (response.ok) {
         const data = await response.json();
@@ -1810,9 +2172,7 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
           + "Our admissions team will review your documents and be in touch soon.",
           "success"
         );
-        nextBtn.disabled = true;
-        submitBtn.disabled = true;
-        backBtn.disabled = true;
+        lockFormAsSubmitted();
       } else {
         const errorData = await response.json().catch(() => ({}));
         if (response.status === 400 && typeof errorData === "object") {
@@ -1846,6 +2206,8 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
       showMessage("Could not reach the server. Please check your connection and try again.", "error");
       submitBtn.disabled = false;
       submitBtn.textContent = "Submit application";
+    } finally {
+      clearTimeout(reassureTimer);
     }
   });
 

@@ -242,6 +242,18 @@ SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-doc
 # bypassed by a client lying in the JSON request.
 MAX_UPLOAD_SIZE_MB = env.int("MAX_UPLOAD_SIZE_MB", default=10)
 
+# Cloudflare Turnstile — bot-blocking on the three public forms (inquiry,
+# application, offer-response). Defaults are Cloudflare's own published test
+# keys (always-passes site key + matching always-passes secret key — see
+# https://developers.cloudflare.com/turnstile/troubleshooting/testing/),
+# not placeholders that fail closed — local dev and this env's own tests can
+# exercise the real Cloudflare siteverify round trip with no account of its
+# own. **Must be overridden with real keys from a real Turnstile site before
+# this offers any actual bot protection** — the test keys are public
+# knowledge, so leaving them in production verifies nothing.
+TURNSTILE_SITE_KEY = env("TURNSTILE_SITE_KEY", default="1x00000000000000000000AA")
+TURNSTILE_SECRET_KEY = env("TURNSTILE_SECRET_KEY", default="1x0000000000000000000000000000000AA")
+
 # Phase 3 — offers. No scheduler exists in this project yet (no Celery, no cron,
 # nothing deployed at all), so expiry is resolved lazily on read rather than by a
 # timed job — see Offer.refresh_expiry() in admissions/models.py.

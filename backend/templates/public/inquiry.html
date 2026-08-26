@@ -482,12 +482,40 @@
       </div>
     </fieldset>
 
+    <div id="turnstile-widget"></div>
+    <div class="field-error" data-error-for="turnstile_token"></div>
+
     <button type="submit" id="submit-btn">Submit enquiry</button>
   </form>
 </main>
 
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <script>
   const API_URL = "/api/admissions/inquiries/";
+  // Cloudflare's published "always passes" test sitekey — this file is only
+  // ever used for local static-file preview outside Django (see
+  // backend/tcs_os/urls.py, which renders the real TURNSTILE_SITE_KEY into
+  // templates/public/inquiry.html instead). Never a real site's key.
+  const TURNSTILE_SITE_KEY = "{{ TURNSTILE_SITE_KEY }}";
+
+  // #turnstile-widget deliberately has no "cf-turnstile" class — that class
+  // makes Cloudflare's script auto-scan and implicitly render the widget on
+  // page load, which wins the race against this explicit render() call and
+  // silently skips it (console warning: "already exists in this
+  // container") — an implicit render never wires up the callback below, so
+  // turnstileToken would stay empty forever even though the widget visibly
+  // works. Confirmed empirically, not assumed.
+  let turnstileToken = "";
+  function renderTurnstileWidget() {
+    if (typeof turnstile === "undefined") { setTimeout(renderTurnstileWidget, 200); return; }
+    turnstile.render("#turnstile-widget", {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token) => { turnstileToken = token; },
+      "expired-callback": () => { turnstileToken = ""; },
+      "error-callback": () => { turnstileToken = ""; },
+    });
+  }
+  renderTurnstileWidget();
   const form = document.getElementById("inquiry-form");
   const submitBtn = document.getElementById("submit-btn");
   const messageBox = document.getElementById("form-message");
@@ -567,13 +595,13 @@
             <label for="student_academic_year_${index}">Academic year enquiring for <span class="required">*</span></label>
             <select id="student_academic_year_${index}" data-field="academic_year" data-other-toggle="student_academic_year_other_${index}" required>
               <option value="" disabled selected>Select one</option>
-              <option value="2026">2026</option>
-              <option value="2027">2027</option>
-              <option value="2028">2028</option>
-              <option value="2029">2029</option>
-              <option value="2030">2030</option>
-              <option value="2031">2031</option>
-              <option value="2032">2032</option>
+              <option value="2026/2027">2026/2027</option>
+              <option value="2027/2028">2027/2028</option>
+              <option value="2028/2029">2028/2029</option>
+              <option value="2029/2030">2029/2030</option>
+              <option value="2030/2031">2030/2031</option>
+              <option value="2031/2032">2031/2032</option>
+              <option value="2032/2033">2032/2033</option>
               <option value="other">Other</option>
             </select>
             <input type="text" id="student_academic_year_other_${index}" class="other-input" placeholder="Please specify" hidden />
@@ -797,6 +825,8 @@
     const comments = document.getElementById("comments").value.trim();
     if (comments) payload.comments = comments;
 
+    payload.turnstile_token = turnstileToken;
+
     return payload;
   }
 
@@ -856,6 +886,11 @@
     event.preventDefault();
     clearMessages();
 
+    if (!turnstileToken) {
+      showMessage("Please complete the verification challenge before submitting.", "error");
+      return;
+    }
+
     const payload = collectPayload();
 
     submitBtn.disabled = true;
@@ -899,6 +934,11 @@
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = "Submit enquiry";
+      // Turnstile tokens are single-use — reset after every attempt
+      // (success or failure) so a retry gets a fresh one instead of a
+      // "token already spent" rejection.
+      turnstile.reset();
+      turnstileToken = "";
     }
   });
 </script>

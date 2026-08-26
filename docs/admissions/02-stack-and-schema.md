@@ -576,6 +576,51 @@ mobile, where `.layout` switches to `flex-direction: column` — the same
 rule then fixed the nav's *height* at 210px, rendering six huge stacked
 boxes instead of a compact strip; caught from an actual mobile screenshot.
 
+## Phase 5 follow-up — Turnstile, nationality, academic year, submission latency (2026-08-26)
+
+### Cloudflare Turnstile
+
+`admissions/turnstile.py`'s `verify_turnstile_token(token, remote_ip=None)` does the real server-side check — a POST to Cloudflare's `siteverify` endpoint. Wired in at the view level (not a serializer field) on the four endpoints that actually create/mutate a real record: `InquiryCreateView`/`ApplicationCreateView` (via a small `TurnstileProtectedCreateMixin.create()`), and `ApplicationDraftSubmitView.post()`/`OfferRespondView.post()` directly. Deliberately **not** applied to the draft save/autosave endpoints — those don't create anything a bot benefits from, and requiring a fresh solve on every autosave would be a real UX cost for a real parent over a multi-minute form.
+
+`TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` default to Cloudflare's own published test keys (`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, both "always passes") — not empty/disabled, so local dev exercises the real Cloudflare round trip with no account of its own. **Must be replaced with real keys from a real Turnstile site before this offers any actual bot protection** — the test keys are public knowledge.
+
+The site key is rendered into `templates/public/*.html` from settings via `extra_context` on each `TemplateView` in `tcs_os/urls.py` (`{{ TURNSTILE_SITE_KEY }}`), not baked in by the usual `frontend/*.html` → `templates/public/*.html` sed pipeline — a deliberate deviation from that pipeline's usual literal-substitution pattern, since the site key is public (safe to render from settings, no reason to hand-copy it) and Django is already templating these files (`{% load static %}` proves it). `frontend/*.html` (the non-Django static preview copies) hardcode the same default test key as a plain literal instead, consistent with how they hardcode their own dev-only `API_BASE`.
+
+Two non-obvious things found only by actually testing this, not by reading Cloudflare's docs:
+- The widget container **must not** have Turnstile's own `cf-turnstile` class if you're rendering it explicitly with `turnstile.render()` and a custom `callback` — that class makes Cloudflare's script auto-scan and implicitly render the widget on page load, which wins the race and silently skips the explicit `render()` call (console warning: "already exists in this container"). An implicit render never wires up the custom callback, so the JS-side token variable stays empty forever even though the widget visibly works and the DOM's hidden `cf-turnstile-response` input does get populated — the bug is invisible unless you check the JS variable specifically, not just "does a token appear somewhere."
+- On `application.html`'s multi-step form, the widget is rendered lazily — only once the Declaration step (the only step with a Submit button) actually becomes visible, not eagerly at page load. Cloudflare's iframe doesn't size itself correctly inside a `[hidden]` (`display:none`) container, which every step but the first is at load.
+
+Tokens are single-use — every submit handler calls `turnstile.reset()` after an attempt (success or failure) so a retry gets a fresh token instead of a "token already spent" rejection.
+
+### Nationality — country dropdown
+
+`application.html`'s `NATIONALITY_OPTIONS` (Student form) is the ISO 3166-1 country list (249 entries: countries plus dependent/special territories), Ghana pinned first, fetched from `lukes/ISO-3166-Countries-with-Regional-Codes` on GitHub rather than hand-typed — 249 entries is exactly the kind of list a human transcribes one entry wrong in. A handful of ISO's official long-form names were swapped for their common name for this parent-facing field (`"Korea, Republic of"` → `"South Korea"`, `"Viet Nam"` → `"Vietnam"`, `"United States of America"` → `"United States"`, etc. — see the code comment for the full list). No model/serializer change — `Student.nationality` was always a free `CharField`, so this is purely a frontend input constraint.
+
+One real compatibility issue found in production data before shipping: the one existing value ever submitted (`"Ghanaian"`, a demonym, from before this dropdown existed) doesn't match any `<option>`, which would silently leave the field blank when an in-progress draft holding that value is resumed. Fixed with a narrow `LEGACY_NATIONALITY_FIXUPS` map in `populateForm()` (currently just `{"Ghanaian": "Ghana"}`, the one value actually seen) — not a general demonym translator, just a compatibility shim for pre-dropdown drafts.
+
+### Academic year — school-year format
+
+Both forms' academic year `<select>` options changed from a single year (`2026`) to a school year (`2027/2028`) — matches how this was originally scoped in Phase 1 (the single-year format shipped was a deviation, not the plan). Pure frontend change: `academic_year` is a free `CharField(max_length=50)` on both `Application` and `Capacity`, with no format constraint at the model or serializer level, so no migration was needed or run. Existing records (a handful of single-year and even a couple of ad hoc "Other" free-text values like `"2027 (mid-year transfer)"`) are left as-is rather than mechanically rewritten — some of those are genuine free-text the parent typed, not a value a script should reinterpret, and `Capacity` currently has zero rows so there's no live format-matching to conflict with yet.
+
+### Submission latency — root cause and fix
+
+Reported symptom: the Application form's final submit shows "Submitting…" for a long time even though the backend had already succeeded (real DB record, real confirmation email sent). Investigated with real evidence before changing anything, per two separate lines:
+
+- **Production Cloud Run request logs** (`gcloud logging read ... httpRequest.latency`) showed the real submit endpoint taking 3.6s on a warm instance with no cold start nearby — and separately, plain draft-save `POST`s occasionally spiking to 5-6s, which turned out to be Cloud Run cold starts (`min-instances=0`), confirmed by the "Starting new instance... AUTOSCALING" log line appearing at the exact same timestamp, not an email-related slowdown.
+- **Directly measured** `django.core.mail.get_connection().open()` against the real Resend SMTP relay: ~2.5-3s per connection, every time — because `emails.py`'s `_send()` opened a brand new SMTP+TLS connection for *every single email*, and a submission sends two (guardian confirmation + staff alert) sequentially. That's the real, confirmed root cause of the bulk of the multi-second wait — not a frontend bug (the fetch call, `response.ok` handling, and message display were all already correct).
+
+Fix: `emails.py` gained `_shared_connection()`, a context manager that opens **one** SMTP connection and passes it into both `_send()` calls for a submission event, instead of each opening its own. Cuts the connection-setup cost from twice to once per event — confirmed by direct before/after timing (a 2-rejected-email test case dropped from 13.6s to 10.2s, a ~3.4s reduction matching almost exactly one avoided connection-open). Falls back to per-email connections if even the shared connection can't be opened, keeping the existing "email plumbing never blocks the real submission" guarantee.
+
+This does **not** eliminate the latency — the response still waits on Resend synchronously, just for one connection's worth of overhead instead of two. True fire-and-forget dispatch (return success once the DB record exists, send email as a background step) would remove it entirely, but needs an actual queue (Cloud Tasks or similar) since Cloud Run only guarantees CPU during an active request by default — a spawned background thread can be frozen mid-send once the response returns. That's new GCP infrastructure with its own cost/complexity, flagged for the user to decide rather than added unasked.
+
+Separately, `application.html` now shows "Still submitting — this can take up to 15 seconds…" if a submit takes more than 4 seconds, so the wait doesn't read as stuck.
+
+### Draft-save failure after a successful submit — the other bug found in production logs
+
+Real production log evidence: two `400`s on `PATCH .../application-drafts/<token>/` for a token that had already been successfully submitted 4-5 minutes earlier. Root cause: the free-navigation UI (sidebar nav, "Save & finish later") was only ever disabled by the success handler for `nextBtn`/`submitBtn`/`backBtn` — the sidebar items and save-later button stayed clickable after a successful submit, and clicking either autosaves via `saveDraft()`, which `PATCH`es the now-submitted draft and gets a real (correctly-behaving) `400 "This application has already been submitted"` — surfaced to the parent as a confusing generic "Could not save your progress" error, most plausibly by a parent who wasn't sure the slow submit (see above) had actually worked and clicked around afterward.
+
+Fixed with `lockFormAsSubmitted()`, called on a successful submit, which disables the entire form UI (nav, both step buttons, save-later) — not just the three buttons it disabled before. As defense in depth (e.g. a stale second tab left open after submitting from another one), `saveDraft()` now also recognizes an `"already been submitted"` `400` specifically and treats it as success (locking the form) rather than reporting a save failure.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.

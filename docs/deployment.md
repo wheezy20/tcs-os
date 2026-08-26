@@ -45,7 +45,7 @@ gcloud artifacts repositories create tcs-os \
 
 ## 3. Secrets in Secret Manager
 
-Only things that are genuinely sensitive go here — `SECRET_KEY`, the database URL (has credentials embedded), the Supabase service-role key, and the Resend key. Everything else (`ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, etc.) is plain config, not a secret, and gets set as a normal env var on the Cloud Run service in step 7 instead.
+Only things that are genuinely sensitive go here — `SECRET_KEY`, the database URL (has credentials embedded), the Supabase service-role key, the Resend key, and the Turnstile secret key. Everything else (`ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `TURNSTILE_SITE_KEY` — public by design, like a Stripe publishable key — etc.) is plain config, not a secret, and gets set as a normal env var on the Cloud Run service in step 7 instead.
 
 Generate a real `SECRET_KEY` first if you don't already have a production one — **do not reuse your local dev `.env`'s value**:
 ```
@@ -58,7 +58,10 @@ echo -n "PASTE_THE_GENERATED_SECRET_KEY" | gcloud secrets create admissions-secr
 echo -n "postgres://user:password@host:5432/postgres" | gcloud secrets create admissions-database-url --data-file=-
 echo -n "PASTE_SUPABASE_SERVICE_ROLE_KEY" | gcloud secrets create admissions-supabase-key --data-file=-
 echo -n "PASTE_RESEND_API_KEY" | gcloud secrets create admissions-resend-key --data-file=-
+echo -n "PASTE_TURNSTILE_SECRET_KEY" | gcloud secrets create admissions-turnstile-key --data-file=-
 ```
+
+`PASTE_TURNSTILE_SECRET_KEY` comes from a real Cloudflare Turnstile widget, not the published test key the code defaults to for local dev (`1x0000000000000000000000000000000AA` — see `docs/admissions/02-stack-and-schema.md`). Create one at [the Cloudflare dashboard → Turnstile](https://dash.cloudflare.com) → Add widget, domain `admissions.tcsch.edu.gh`, widget mode "Managed" — copy both the site key and secret key it gives you; the site key goes in step 7 as a plain env var (`TURNSTILE_SITE_KEY`), not a secret.
 
 Grant the Cloud Run runtime service account access to read them. By default Cloud Run uses the *Compute Engine default service account* unless you've created a dedicated one — check which one applies with `gcloud run services describe`, or create a dedicated one now (recommended, tighter scope than the default):
 ```
@@ -67,7 +70,7 @@ gcloud iam service-accounts create admissions-runner \
 
 export RUNNER_SA=admissions-runner@$PROJECT_ID.iam.gserviceaccount.com
 
-for SECRET in admissions-secret-key admissions-database-url admissions-supabase-key admissions-resend-key; do
+for SECRET in admissions-secret-key admissions-database-url admissions-supabase-key admissions-resend-key admissions-turnstile-key; do
   gcloud secrets add-iam-policy-binding $SECRET \
     --member="serviceAccount:$RUNNER_SA" \
     --role="roles/secretmanager.secretAccessor"
@@ -178,11 +181,15 @@ gcloud run deploy admissions \
   --set-env-vars="SUPABASE_URL=https://your-project.supabase.co" \
   --set-env-vars="SUPABASE_STORAGE_BUCKET=admissions-documents" \
   --set-env-vars="OFFER_EXPIRY_DAYS=14" \
+  --set-env-vars="TURNSTILE_SITE_KEY=PASTE_REAL_TURNSTILE_SITE_KEY" \
   --set-secrets="SECRET_KEY=admissions-secret-key:latest" \
   --set-secrets="DATABASE_URL=admissions-database-url:latest" \
   --set-secrets="SUPABASE_SERVICE_ROLE_KEY=admissions-supabase-key:latest" \
-  --set-secrets="RESEND_API_KEY=admissions-resend-key:latest"
+  --set-secrets="RESEND_API_KEY=admissions-resend-key:latest" \
+  --set-secrets="TURNSTILE_SECRET_KEY=admissions-turnstile-key:latest"
 ```
+
+If `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` are left unset here, the app falls back to Cloudflare's published "always passes" test keys — the three public forms will work, but offer **no actual bot protection** in production. Don't skip this.
 
 `--allow-unauthenticated` is required — this serves public admissions forms, not an internal tool. `min-instances=0` keeps the scale-to-zero cost profile `shared-stack.md` calls for; add `--min-instances=1` later if cold starts on the inquiry form become a real complaint.
 
@@ -272,9 +279,25 @@ In the Cloudflare dashboard, under the `tcsch.edu.gh` zone → DNS:
 |---|---|---|---|
 | CNAME | `admissions` | `ghs.googlehosted.com` (confirm exact value from step 11's output) | **DNS only** (grey cloud) |
 
-Leave it grey-clouded (not proxied) until `gcloud run domain-mappings describe --domain=admissions.tcsch.edu.gh --region=$REGION` shows the mapping's certificate status as `Ready` — Cloud Run's managed cert provisioning does a validation check that a Cloudflare-proxied (orange cloud) record can interfere with. Once it's `Ready`, you can switch it to **Proxied** (orange cloud) to get Cloudflare's TLS/DDoS/rate-limiting layer in front, as `shared-stack.md` calls for — Cloudflare set to **Full (strict)** SSL mode at that point, so it validates Cloud Run's real cert rather than accepting anything.
+Leave it grey-clouded (not proxied) until `gcloud run domain-mappings describe --domain=admissions.tcsch.edu.gh --region=$REGION` shows the mapping's certificate status as `Ready` — Cloud Run's managed cert provisioning does a validation check that a Cloudflare-proxied (orange cloud) record can interfere with. Once it's `Ready`, you can switch it to **Proxied** (orange cloud) to get Cloudflare's TLS/DDoS/rate-limiting layer in front, as `shared-stack.md` calls for — Cloudflare set to **Full (strict)** SSL mode at that point, so it validates Cloud Run's real cert rather than accepting anything. **The rate-limit rule below only takes effect once this record is proxied (orange cloud)** — Cloudflare can't see, let alone rate-limit, traffic to a grey-clouded (DNS-only) record.
+
+## 13. Cloudflare rate-limit rule on `/api/admissions/*`
+
+Dashboard config, not code — this is genuinely a Cloudflare-side step, not something `manage.py`/DRF settings can do, since the point is to stop abusive traffic *before* it reaches Cloud Run at all. (Django-side, `DEFAULT_THROTTLE_RATES` in `settings.py` already rate-limits per-endpoint at the application layer — `20/hour` anonymous, `120/hour` for draft autosaves — this Cloudflare rule is a second, earlier line of defense, not a replacement.)
+
+In the Cloudflare dashboard, for the `tcsch.edu.gh` zone:
+
+1. Go to **Security** → **Security rules** → **Create rule** → **Rate limiting rules**.
+2. **Rule name**: something like `admissions-api-rate-limit`.
+3. **Field**: `URI Path`, **Operator**: `starts with`, **Value**: `/api/admissions/`. (Add a second condition — **Hostname** `equals` `admissions.tcsch.edu.gh` — if this zone ever hosts more than this one subdomain.)
+4. **When rate exceeds**: start with something like `60` requests per `1 minute` — comfortably above real traffic (the app's own tightest limit is 20/hour *per client*, but this Cloudflare rule counts *all* clients together for the path, so it needs headroom) but well below what a scripted bot would produce.
+5. **With the same characteristics**: `IP address` (default) — counts each visitor's requests separately.
+6. **Choose action**: `Block` (or `Managed Challenge` if you'd rather give a real burst of legitimate traffic a chance to prove itself before blocking).
+7. **Duration**: how long the block/challenge lasts once triggered — `10 minutes` is a reasonable start.
+8. **Deploy**.
+
+The free Cloudflare plan allows exactly **one** rate limiting rule per zone — this is it, so don't create a second one for something else without upgrading. Watch **Security** → **Events** for a day or two after deploying to confirm it's not accidentally catching real parents (e.g. the multi-step Application form's autosaves) before trusting it unattended.
 
 ## After this works
 
-- Turnstile on the three public forms, and a Cloudflare rate-limit rule on `/api/admissions/*` — flagged as still-open in `docs/admissions/03-build-order.md` since Phase 1, unrelated to this deploy and not addressed here.
-- Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy` with the same flags) — plus step 5's migrate job if the new code has migrations.
+- Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy` with the same flags) — plus step 5's migrate job if the new code has migrations, and step 5b's storage-config job if upload limits changed.

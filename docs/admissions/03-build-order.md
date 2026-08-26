@@ -21,7 +21,7 @@ Scope shifted from the original plan below in a few real ways — noted inline r
 
 **Moved out of Phase 1:** file upload (frontend → Supabase Storage → Django) — the original plan bundled this into Phase 1, but Inquiry never actually collects documents; only Application does. It shipped as part of Phase 2 instead.
 
-**Still not done, no phase currently owns it:** Cloudflare (subdomain proxy, Turnstile on the form, rate-limit rule on `/api/admissions/*`). Nothing has been deployed anywhere yet — everything has been tested against local `runserver`/`gunicorn` and the real Supabase project, not a live URL.
+**Still not done, no phase currently owns it:** Cloudflare (subdomain proxy, Turnstile on the form, rate-limit rule on `/api/admissions/*`). Nothing has been deployed anywhere yet — everything has been tested against local `runserver`/`gunicorn` and the real Supabase project, not a live URL. **Resolved (2026-08-26):** Turnstile shipped — see the Phase 5 follow-up entry below and `04-build-log.md`. The Cloudflare rate-limit rule is dashboard config, not code — steps given in `docs/deployment.md`, not yet applied by the user.
 
 **Definition of done, revised:** a parent can submit a full inquiry (multiple children, multiple guardians) and it's correctly modeled in Postgres; staff can see and work it in the branded admin. Met. Not met: actually live on the real subdomain, behind Cloudflare.
 
@@ -98,7 +98,7 @@ Closes out the "still not done" item flagged back in Phase 1 (Cloudflare, real s
 - Resend wired up as `EMAIL_BACKEND` via Django's built-in SMTP backend (Resend's SMTP relay, not `django-anymail` — no new dependency; confirmed against Resend's own docs that SMTP is directly supported, not assumed). Gated behind `RESEND_API_KEY`: unset falls back to the console backend exactly as before, so local dev is unaffected.
 - `docs/deployment.md` — full `gcloud` command sequence for the first real deploy (Secret Manager, Artifact Registry, Cloud Run service + Jobs for migrate/createsuperuser, domain mapping). Not run — written for you to execute.
 
-**Not done here, deliberately out of scope:** Turnstile on the forms, the Cloudflare rate-limit rule on `/api/admissions/*` — both flagged as open since Phase 1, still open.
+**Not done here, deliberately out of scope:** Turnstile on the forms, the Cloudflare rate-limit rule on `/api/admissions/*` — both flagged as open since Phase 1, still open. **Resolved (2026-08-26):** see the Phase 5 follow-up entry below.
 
 ## Phase 5 — Expanded Application form — in progress (2026-08-26)
 
@@ -117,6 +117,18 @@ Brings the Application form up to the school's real paper/Google Forms process �
 - Tested end-to-end for real, not by inspection: a full 6-step submission through the actual browser (including two real Supabase document uploads) verified correct in the database afterward; a separate save-for-later → real resend email → resume-on-a-fresh-page test confirmed all fields (including the reverse dd/mm/yyyy conversion) restore correctly; server-side rejection confirmed for Annex+wrong-grade, an unknown campus name, and a missing declaration; the health-info permission gate confirmed both ways in the real admin UI, not just by code reading
 
 **Not done here, deliberately out of scope:** a real payment portal (stays offline/proof-upload until one exists) and a real parent login/portal — the draft token is an explicit stopgap for the latter, flagged in `01-vision.md`, not a replacement for one.
+
+### Phase 5 follow-up — free navigation, loose ends (2026-08-26)
+
+Two later sessions on top of the base Phase 5 build, same phase — not new functionality so much as production hardening and loose ends.
+
+- Replaced strictly-linear Next/Back with free jump-between-sections (sidebar on desktop, horizontal scroll bar on mobile) — see `04-build-log.md` for the two real bugs found while testing it (a throttle scope shared with real submissions, and a mobile CSS width-vs-height bug).
+- Document upload type/size limits (PDF/JPG/PNG, 10MB), enforced client-side, server-side, and on the Supabase bucket itself — the bucket-level limit is the one that can't be bypassed by a client lying about its own file size.
+- **Turnstile + Cloudflare rate-limit rule** — the item flagged as open since Phase 1 (see above). Turnstile shipped on all three public forms (Inquiry, Application's final submit, Offer accept/decline); the rate-limit rule is Cloudflare dashboard config, not code — see `docs/deployment.md`.
+- Nationality changed from free text to a dropdown (ISO 3166-1 country list, 249 entries) — was previously going to require hand-typing a country list; fetched a real dataset instead. See `04-build-log.md` for the common-name adjustments made for a parent-facing field.
+- Academic year format changed from a single year (`2026`) to a school year (`2026/2027`), matching how this was originally scoped back in Phase 1 — pure frontend change, no migration, since `academic_year` was always a free `CharField` with no format constraint.
+- Root-caused (not guessed) a reported "Submitting… forever" bug: synchronous, per-email SMTP connection setup to Resend (~2.5-3s each, confirmed by direct measurement) was the dominant cost, not a frontend bug — fixed by reusing one connection for both emails per submission event. Separately root-caused a "Save & finish later" failure via production logs: the sidebar/save-later button weren't disabled after a successful submit, so further clicks PATCHed an already-submitted draft and got a real (correctly-behaving) 400 surfaced as a confusing generic error — fixed by locking the whole form on success, with a defensive fallback if that's ever bypassed (e.g. a stale second tab).
+- **Flagged, not built:** true fire-and-forget email dispatch (e.g. via Cloud Tasks) so a submission's HTTP response doesn't wait on Resend at all — would remove the remaining latency entirely, but is new GCP infrastructure with its own cost/complexity, not a code-only fix. Left for the user to decide rather than added unasked.
 
 ## Phase 6 — CRM & marketing layer
 - Enquiries before application (lead capture even without a full application)

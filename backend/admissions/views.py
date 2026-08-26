@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
-from . import emails, storage
+from . import emails, storage, turnstile
 from .models import ApplicationDraft, Offer
 from .serializers import (
     ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
@@ -22,7 +22,30 @@ class DraftRateThrottle(AnonRateThrottle):
     scope = "application_draft"
 
 
-class InquiryCreateView(generics.CreateAPIView):
+def _turnstile_error_response(request):
+    """None if the request's turnstile_token is valid, else a 400 Response
+    shaped like a normal field error so the frontend's existing
+    showFieldErrors() handles it with no special-casing."""
+    try:
+        turnstile.verify_turnstile_token(request.data.get("turnstile_token"), request.META.get("REMOTE_ADDR"))
+    except turnstile.TurnstileVerificationError as exc:
+        return Response({"turnstile_token": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+    return None
+
+
+class TurnstileProtectedCreateMixin:
+    """Verifies a Cloudflare Turnstile token before create() runs. Only on
+    endpoints that create a real record — see turnstile.py's docstring for
+    why the draft save endpoints are deliberately excluded."""
+
+    def create(self, request, *args, **kwargs):
+        error = _turnstile_error_response(request)
+        if error:
+            return error
+        return super().create(request, *args, **kwargs)
+
+
+class InquiryCreateView(TurnstileProtectedCreateMixin, generics.CreateAPIView):
     """POST /api/admissions/inquiries/ — public endpoint, the entry point for
     a family enquiring for the first time. Everything else (review, stage
     changes, document approval) happens through Django admin for now."""
@@ -34,7 +57,7 @@ class InquiryCreateView(generics.CreateAPIView):
         emails.send_inquiry_emails(family, family.created_applications)
 
 
-class ApplicationCreateView(generics.CreateAPIView):
+class ApplicationCreateView(TurnstileProtectedCreateMixin, generics.CreateAPIView):
     """POST /api/admissions/applications/ — public endpoint, open to anyone
     (doesn't require a prior Inquiry). See ApplicationSerializer for the
     Family/Guardian/Student matching logic that avoids duplicate records."""
@@ -154,6 +177,10 @@ class ApplicationDraftSubmitView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, token):
+        error = _turnstile_error_response(request)
+        if error:
+            return error
+
         draft = get_object_or_404(ApplicationDraft, token=token)
         if draft.is_submitted:
             return Response(
@@ -186,6 +213,10 @@ class OfferRespondView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, token):
+        error = _turnstile_error_response(request)
+        if error:
+            return error
+
         offer = get_object_or_404(Offer, token=token)
         offer.refresh_expiry()  # settle a lazily-detected expiry before deciding anything
 
