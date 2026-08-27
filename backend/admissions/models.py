@@ -83,6 +83,10 @@ def _generate_draft_token():
     return secrets.token_urlsafe(32)
 
 
+def _generate_unsubscribe_token():
+    return secrets.token_urlsafe(32)
+
+
 def _default_draft_expiry():
     return timezone.now() + timedelta(days=settings.DRAFT_EXPIRY_DAYS)
 
@@ -158,6 +162,13 @@ class Guardian(models.Model):
     religion = models.CharField(max_length=255, blank=True, default="")
     address = models.CharField(max_length=255, blank=True, default="")
     town_city = models.CharField(max_length=255, blank=True, default="")
+
+    # Bulk/marketing email only (Phase 6) — never checked by transactional
+    # sends (confirmation, offer, draft-resume emails). Generated eagerly for
+    # every Guardian, same as Offer.token, so the unsubscribe link in a bulk
+    # email is always valid even for a Guardian created before this existed.
+    bulk_email_unsubscribe_token = models.CharField(max_length=64, unique=True, default=_generate_unsubscribe_token)
+    bulk_email_unsubscribed_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def full_name(self):
@@ -616,3 +627,87 @@ class Note(models.Model):
 
     def __str__(self):
         return f"Note on {self.application} ({self.created_at:%Y-%m-%d})"
+
+
+class EmailCampaign(models.Model):
+    """Phase 6 — a bulk/marketing send to Guardians (never used for
+    transactional email — those go through emails.py directly, unaffected by
+    anything here). Recipients are computed once, when staff hit Send (see
+    admin.py's send_campaign action / bulk_email.py's compute_recipients) —
+    not recalculated afterward, so this stays an accurate historical record
+    of who a real campaign actually went to even if Guardian data changes
+    later. filter_* fields are optional narrowing on top of "every Guardian
+    not currently unsubscribed" (opt-out by default, not an explicit list)."""
+
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("queued", "Queued"),
+        ("sending", "Sending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+    ]
+
+    name = models.CharField(max_length=255, help_text="Internal label — not shown to recipients")
+    subject = models.CharField(max_length=255, help_text="Supports {{placeholders}} — see bulk_email.py")
+    body = models.TextField(
+        help_text="Plain text. Supports {{guardian_first_name}}, {{guardian_full_name}}, "
+        "{{student_names}}, {{unsubscribe_link}} — {{unsubscribe_link}} is required.",
+    )
+    filter_stage = models.CharField(
+        max_length=20, choices=Application.STAGE_CHOICES, blank=True, default="",
+        help_text="Blank = no filter (every stage)",
+    )
+    filter_academic_year = models.CharField(max_length=50, blank=True, default="", help_text="Blank = no filter")
+    filter_campus = models.ForeignKey(
+        Campus, null=True, blank=True, on_delete=models.PROTECT, help_text="Blank = no filter",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    created_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    total_recipients = models.PositiveIntegerField(default=0)
+    sent_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        permissions = [("can_send_bulk_email", "Can send bulk/marketing email campaigns")]
+
+    def clean(self):
+        if "{{unsubscribe_link}}" not in self.body:
+            raise ValidationError({"body": "The body must include {{unsubscribe_link}} — required for every bulk send."})
+
+    def __str__(self):
+        return f"{self.name} ({self.get_status_display()})"
+
+
+class EmailCampaignRecipient(models.Model):
+    """One row per Guardian a campaign was (or will be) sent to — the audit
+    trail. email is a snapshot of Guardian.email at send time, since a
+    Guardian's address could change after the fact and this should reflect
+    what was actually used. No bounced_at/opened_at here by design (see
+    docs/admissions/02-stack-and-schema.md) — that needs Resend webhooks and
+    is deliberately out of scope for this first cut. resend_message_id is
+    kept anyway (free, from the batch API's own response) so a future
+    webhook-based bounce feature can correlate back to this row without a
+    schema change."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+        ("skipped_unsubscribed", "Skipped (unsubscribed)"),
+    ]
+
+    campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE, related_name="recipients")
+    guardian = models.ForeignKey(Guardian, on_delete=models.CASCADE, related_name="bulk_email_recipient_records")
+    email = models.EmailField()
+    status = models.CharField(max_length=25, choices=STATUS_CHOICES, default="pending")
+    resend_message_id = models.CharField(max_length=100, blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        unique_together = ("campaign", "guardian")
+
+    def __str__(self):
+        return f"{self.email} — {self.campaign.name} ({self.get_status_display()})"

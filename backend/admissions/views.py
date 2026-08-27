@@ -1,16 +1,27 @@
-from django.shortcuts import get_object_or_404
+import hmac
+import logging
+
+from django.conf import settings
+from django.db.models import Count, Q
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from django.views.generic import View
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
-from . import emails, storage, turnstile
-from .models import ApplicationDraft, Offer
+from . import bulk_email, emails, storage, turnstile
+from .models import ApplicationDraft, EmailCampaign, EmailCampaignRecipient, Guardian, Offer
 from .serializers import (
     ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
     OfferResponseSerializer, UploadURLRequestSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DraftRateThrottle(AnonRateThrottle):
@@ -238,3 +249,111 @@ class OfferRespondView(APIView):
             "student_full_name": offer.application.student.full_name,
             "response": offer.response,
         })
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class UnsubscribeView(View):
+    """Phase 6 — GET .../unsubscribe/<token>/ is for a human clicking the
+    link in a bulk email's body; POST is the RFC 8058 one-click unsubscribe
+    Gmail/Outlook fire directly (silently, no rendered response shown to the
+    user) when someone clicks the mail client's own native Unsubscribe
+    button — both do the same thing. csrf_exempt because RFC 8058's whole
+    point is a mail provider's server posting with no browser session/CSRF
+    cookie at all (this isn't a DRF APIView, which gets csrf_exempt
+    automatically — see the CSRF investigation in docs/admissions/
+    04-build-log.md for why that automatic exemption doesn't reach plain
+    Django views). Safe here: unsubscribing is idempotent and low-stakes,
+    and the token itself is the real access control, same trust model as
+    Offer/ApplicationDraft.
+    same trust model as Offer/ApplicationDraft. Only ever touches
+    Guardian.bulk_email_unsubscribed_at — never checked by transactional
+    email (emails.py), so this can't accidentally suppress an offer or
+    confirmation email."""
+
+    def _unsubscribe(self, token):
+        guardian = get_object_or_404(Guardian, bulk_email_unsubscribe_token=token)
+        if guardian.bulk_email_unsubscribed_at is None:
+            guardian.bulk_email_unsubscribed_at = timezone.now()
+            guardian.save(update_fields=["bulk_email_unsubscribed_at"])
+        return guardian
+
+    def get(self, request, token):
+        guardian = self._unsubscribe(token)
+        return render(request, "public/unsubscribed.html", {"guardian_first_name": guardian.first_name})
+
+    def post(self, request, token):
+        self._unsubscribe(token)
+        return HttpResponse(status=200)
+
+
+class BulkEmailBatchSendView(APIView):
+    """Cloud Tasks' HTTP target for one batch (<=100 recipients) of a bulk
+    email campaign — not a public API. Protected by a shared-secret header,
+    not a DRF permission class, since "the caller is Cloud Tasks" isn't a
+    concept DRF's permission model has; compared with hmac.compare_digest,
+    not `==`, so a malformed/guessed secret can't be distinguished from a
+    correct one by response-timing. Refuses everything if the secret isn't
+    configured at all — an empty expected value must never accidentally
+    open this endpoint to compare_digest("", "")."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        expected = settings.BULK_EMAIL_INTERNAL_SECRET
+        provided = request.headers.get("X-Internal-Secret", "")
+        if not expected or not hmac.compare_digest(provided, expected):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        campaign = get_object_or_404(EmailCampaign, id=request.data.get("campaign_id"))
+        recipient_ids = request.data.get("recipient_ids") or []
+        recipients = list(
+            EmailCampaignRecipient.objects.filter(id__in=recipient_ids, status="pending")
+            .select_related("guardian", "campaign")
+        )
+        if not recipients:
+            self._finalize_if_done(campaign)
+            return Response({"processed": 0})
+
+        # Cloud Tasks includes this on a retried dispatch — 0 on the first
+        # attempt. Only mark recipients permanently "failed" once no more
+        # retries are coming; otherwise leave them "pending" so the next
+        # retry (which re-queries by status="pending") picks them back up,
+        # rather than being silently skipped forever.
+        retry_count = int(request.headers.get("X-CloudTasks-TaskRetryCount", 0))
+        is_last_attempt = retry_count >= settings.CLOUD_TASKS_MAX_ATTEMPTS - 1
+
+        try:
+            payload = bulk_email.build_batch_payload(recipients)
+            result = bulk_email.send_resend_batch(payload)
+            sent_ids = result.get("data", [])
+            now = timezone.now()
+            for recipient, item in zip(recipients, sent_ids):
+                recipient.status = "sent"
+                recipient.resend_message_id = item.get("id", "")
+                recipient.sent_at = now
+                recipient.save(update_fields=["status", "resend_message_id", "sent_at"])
+        except bulk_email.ResendBatchError as exc:
+            logger.warning("Bulk email batch send failed (campaign %s, attempt %s): %s", campaign.id, retry_count, exc)
+            if not is_last_attempt:
+                return Response({"detail": "transient failure, will retry"}, status=status.HTTP_502_BAD_GATEWAY)
+            for recipient in recipients:
+                recipient.status = "failed"
+                recipient.error_message = str(exc)
+                recipient.save(update_fields=["status", "error_message"])
+
+        self._finalize_if_done(campaign)
+        return Response({"processed": len(recipients)})
+
+    def _finalize_if_done(self, campaign):
+        counts = campaign.recipients.aggregate(
+            sent=Count("id", filter=Q(status="sent")),
+            failed=Count("id", filter=Q(status="failed")),
+            pending=Count("id", filter=Q(status="pending")),
+        )
+        campaign.sent_count = counts["sent"]
+        campaign.failed_count = counts["failed"]
+        update_fields = ["sent_count", "failed_count"]
+        if counts["pending"] == 0:
+            campaign.status = "sent" if counts["sent"] > 0 else "failed"
+            campaign.sent_at = timezone.now()
+            update_fields += ["status", "sent_at"]
+        campaign.save(update_fields=update_fields)

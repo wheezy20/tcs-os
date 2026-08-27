@@ -31,8 +31,11 @@ gcloud services enable \
   run.googleapis.com \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
-  cloudbuild.googleapis.com
+  cloudbuild.googleapis.com \
+  cloudtasks.googleapis.com
 ```
+
+`cloudtasks.googleapis.com` is for Phase 6's bulk email background sends (see step 5c) — **already enabled** on the real project as part of that build, included here so a from-scratch setup elsewhere stays complete.
 
 ## 2. Artifact Registry — where the built image lives
 
@@ -45,7 +48,7 @@ gcloud artifacts repositories create tcs-os \
 
 ## 3. Secrets in Secret Manager
 
-Only things that are genuinely sensitive go here — `SECRET_KEY`, the database URL (has credentials embedded), the Supabase service-role key, the Resend key, and the Turnstile secret key. Everything else (`ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `TURNSTILE_SITE_KEY` — public by design, like a Stripe publishable key — etc.) is plain config, not a secret, and gets set as a normal env var on the Cloud Run service in step 7 instead.
+Only things that are genuinely sensitive go here — `SECRET_KEY`, the database URL (has credentials embedded), the Supabase service-role key, the Resend key, the Turnstile secret key, and the bulk-email internal shared secret. Everything else (`ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `TURNSTILE_SITE_KEY` — public by design, like a Stripe publishable key — etc.) is plain config, not a secret, and gets set as a normal env var on the Cloud Run service in step 7 instead.
 
 Generate a real `SECRET_KEY` first if you don't already have a production one — **do not reuse your local dev `.env`'s value**:
 ```
@@ -59,9 +62,12 @@ echo -n "postgres://user:password@host:5432/postgres" | gcloud secrets create ad
 echo -n "PASTE_SUPABASE_SERVICE_ROLE_KEY" | gcloud secrets create admissions-supabase-key --data-file=-
 echo -n "PASTE_RESEND_API_KEY" | gcloud secrets create admissions-resend-key --data-file=-
 echo -n "PASTE_TURNSTILE_SECRET_KEY" | gcloud secrets create admissions-turnstile-key --data-file=-
+python3 -c "import secrets; print(secrets.token_urlsafe(48))" | tr -d '\n' | gcloud secrets create admissions-bulk-email-secret --data-file=-
 ```
 
 `PASTE_TURNSTILE_SECRET_KEY` comes from a real Cloudflare Turnstile widget, not the published test key the code defaults to for local dev (`1x0000000000000000000000000000000AA` — see `docs/admissions/02-stack-and-schema.md`). Create one at [the Cloudflare dashboard → Turnstile](https://dash.cloudflare.com) → Add widget, domain `admissions.tcsch.edu.gh`, widget mode "Managed" — copy both the site key and secret key it gives you; the site key goes in step 7 as a plain env var (`TURNSTILE_SITE_KEY`), not a secret.
+
+`admissions-bulk-email-secret` isn't from any external service — it's an arbitrary random value your own code both sets (on the Cloud Run service, step 7) and checks (in `BulkEmailBatchSendView`), so Cloud Tasks' dispatch to the internal batch-send endpoint can be told apart from a request from anyone else on the internet. **Already created on the real project** for this build — generating a fresh one here would just orphan the one Cloud Tasks tasks already reference, so only regenerate this if you specifically want to rotate it (and update the Cloud Run service to match in the same step).
 
 Grant the Cloud Run runtime service account access to read them. By default Cloud Run uses the *Compute Engine default service account* unless you've created a dedicated one — check which one applies with `gcloud run services describe`, or create a dedicated one now (recommended, tighter scope than the default):
 ```
@@ -70,12 +76,20 @@ gcloud iam service-accounts create admissions-runner \
 
 export RUNNER_SA=admissions-runner@$PROJECT_ID.iam.gserviceaccount.com
 
-for SECRET in admissions-secret-key admissions-database-url admissions-supabase-key admissions-resend-key admissions-turnstile-key; do
+for SECRET in admissions-secret-key admissions-database-url admissions-supabase-key admissions-resend-key admissions-turnstile-key admissions-bulk-email-secret; do
   gcloud secrets add-iam-policy-binding $SECRET \
     --member="serviceAccount:$RUNNER_SA" \
     --role="roles/secretmanager.secretAccessor"
 done
+
+# Phase 6 — the runner service account also needs to *create* Cloud Tasks
+# (to enqueue a bulk send), not just read secrets:
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:$RUNNER_SA" \
+  --role="roles/cloudtasks.enqueuer"
 ```
+
+Both the secret and the two IAM grants above are **already done** on the real project as part of this build.
 
 ## 4. Build and push the image
 
@@ -131,6 +145,20 @@ gcloud run jobs execute admissions-configure-storage --region=$REGION --wait
 
 Re-run this any time `MAX_UPLOAD_SIZE_MB` or the allowed extensions change — it's not automatic and not part of the regular deploy. (If you set `MAX_UPLOAD_SIZE_MB` to something other than the 10MB default, add `--set-env-vars="MAX_UPLOAD_SIZE_MB=..."` here too.)
 
+### 5c. Create the Cloud Tasks queue for bulk email (one-off)
+
+Phase 6's background-job infrastructure — dispatches a bulk/marketing send in batches instead of one long synchronous request (see `docs/admissions/02-stack-and-schema.md` for why: Resend's 10 req/sec team-wide rate limit makes a per-recipient loop infeasible at TCS's real family count). Unlike the two Cloud Run Jobs above, this is a standing queue, not a one-shot job:
+
+```
+gcloud tasks queues create admissions-bulk-email \
+  --location=$REGION \
+  --max-dispatches-per-second=5 \
+  --max-concurrent-dispatches=5 \
+  --max-attempts=3
+```
+
+`--max-dispatches-per-second=5` is the real throttle — it keeps this queue safely under Resend's rate limit without any hand-rolled pacing logic in the app itself. `--max-attempts=3` must match `CLOUD_TASKS_MAX_ATTEMPTS` in step 7's env vars — the batch-send handler uses that number to know whether a failed batch still has retries coming (leave the recipients "pending") or not (mark them "failed" for good, see `admissions/views.py:BulkEmailBatchSendView`). **Already created** on the real project as part of this build, in `$REGION`.
+
 ## 6. Verify a sending domain in Resend
 
 Emails will silently fail (or get rejected by Resend) until `tcsch.edu.gh` —
@@ -160,6 +188,18 @@ not forgotten once the service is live and staff are expecting real email.
    can take up to 24 hours; Resend re-checks and flips each record's status
    (missing → verified) as it resolves.
 
+### 6b. Verify the bulk-email sending subdomain (Phase 6) — you'll need to do this
+
+Unlike step 6 above, this one **is** the "isolate sending reputation" case that step 6 mentions in passing — bulk/marketing mail is far likelier to generate spam complaints or a high bounce rate than a one-off transactional confirmation, and a shared domain would let that damage the deliverability of the offer/confirmation emails that actually matter. `BULK_EMAIL_FROM_EMAIL` defaults to `updates@updates.tcsch.edu.gh` — a separate subdomain from `tcsch.edu.gh`, not just a separate local part.
+
+1. In the Resend dashboard: **Domains → Add Domain**, enter `updates.tcsch.edu.gh` (a subdomain, added as its own domain in Resend — not a record under the existing `tcsch.edu.gh` entry from step 6).
+2. Same as step 6: Resend generates its own SPF/DKIM/MX records on this new domain's **Records** tab. Since this is a dedicated subdomain with no existing mail flow of its own, there's no "merge with an existing SPF record" concern here — add Resend's records as given.
+3. Add those records in Cloudflare DNS, same as step 6 (TXT/MX, never proxied).
+4. Back in Resend, **Verify DNS Records**.
+5. Once verified, either leave `BULK_EMAIL_FROM_EMAIL` at its default (`updates@updates.tcsch.edu.gh`) or set it to whatever local part you'd rather send from on that subdomain — set via step 7's env vars.
+
+This is genuinely new DNS/Resend setup work on your end — nothing here has been done for you, unlike the GCP-side steps above.
+
 ## 7. Deploy the Cloud Run service
 
 Non-secret config as plain env vars, secrets pulled in via `--set-secrets`. `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS`/`CORS_ALLOWED_ORIGINS`/`FRONTEND_BASE_URL` are set to the real domain here — that's the one place those four actually get their production values, `settings.py` itself only has localhost dev defaults on purpose:
@@ -182,14 +222,22 @@ gcloud run deploy admissions \
   --set-env-vars="SUPABASE_STORAGE_BUCKET=admissions-documents" \
   --set-env-vars="OFFER_EXPIRY_DAYS=14" \
   --set-env-vars="TURNSTILE_SITE_KEY=PASTE_REAL_TURNSTILE_SITE_KEY" \
+  --set-env-vars="BULK_EMAIL_FROM_EMAIL=updates@updates.tcsch.edu.gh" \
+  --set-env-vars="GCP_PROJECT_ID=$PROJECT_ID" \
+  --set-env-vars="CLOUD_TASKS_LOCATION=$REGION" \
+  --set-env-vars="CLOUD_TASKS_QUEUE=admissions-bulk-email" \
+  --set-env-vars="CLOUD_TASKS_MAX_ATTEMPTS=3" \
   --set-secrets="SECRET_KEY=admissions-secret-key:latest" \
   --set-secrets="DATABASE_URL=admissions-database-url:latest" \
   --set-secrets="SUPABASE_SERVICE_ROLE_KEY=admissions-supabase-key:latest" \
   --set-secrets="RESEND_API_KEY=admissions-resend-key:latest" \
-  --set-secrets="TURNSTILE_SECRET_KEY=admissions-turnstile-key:latest"
+  --set-secrets="TURNSTILE_SECRET_KEY=admissions-turnstile-key:latest" \
+  --set-secrets="BULK_EMAIL_INTERNAL_SECRET=admissions-bulk-email-secret:latest"
 ```
 
 If `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` are left unset here, the app falls back to Cloudflare's published "always passes" test keys — the three public forms will work, but offer **no actual bot protection** in production. Don't skip this.
+
+`GCP_PROJECT_ID`/`CLOUD_TASKS_LOCATION`/`CLOUD_TASKS_QUEUE`/`CLOUD_TASKS_MAX_ATTEMPTS` must match step 5c's real queue exactly, or Phase 6's "Send" action in admin will fail to enqueue (cleanly — see `admissions/admin.py:send_campaign`, which rolls back to Draft rather than leaving a stuck "Queued" campaign with nothing dispatched). `BULK_EMAIL_FROM_EMAIL`'s domain must be verified per step 6b before a real send will actually deliver.
 
 `--allow-unauthenticated` is required — this serves public admissions forms, not an internal tool. `min-instances=0` keeps the scale-to-zero cost profile `shared-stack.md` calls for; add `--min-instances=1` later if cold starts on the inquiry form become a real complaint.
 
@@ -301,3 +349,4 @@ The free Cloudflare plan allows exactly **one** rate limiting rule per zone — 
 ## After this works
 
 - Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy` with the same flags) — plus step 5's migrate job if the new code has migrations, and step 5b's storage-config job if upload limits changed.
+- Before using Phase 6's bulk email for real: step 6b (bulk-email subdomain verification) is real setup work still needed on your end, and `admissions.can_send_bulk_email` needs to be granted to whichever staff member(s) should actually be able to trigger a send — not automatic, same deliberate-grant pattern as `can_view_health_info`.

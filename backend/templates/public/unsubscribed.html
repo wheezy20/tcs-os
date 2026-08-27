@@ -1,0 +1,65 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Unsubscribed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #F3FAFA;
+    --card-bg: #ffffff;
+    --border: #D5E5E5;
+    --text: #1A2E2E;
+    --text-muted: #5C7373;
+    --primary: #005E61;
+    --radius: 8px;
+    --font-heading: "Cinzel", serif;
+    --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2.5rem 1rem;
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+  }
+  main { width: 100%; max-width: 480px; }
+  .brand-header { display: flex; justify-content: center; margin-bottom: 1.5rem; }
+  .brand-header img { height: 52px; width: auto; }
+  h1 {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.6rem;
+    text-align: center;
+    margin-bottom: 0.25rem;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.75rem;
+    text-align: center;
+    color: var(--text-muted);
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand-header">
+    <img src="{% static 'admissions/branding/full-logo-horizontal-white-bg.png' %}" alt="Treasures Christian School" />
+  </div>
+  <h1>You've been unsubscribed</h1>
+  <div class="card">
+    <p>{% if guardian_first_name %}Thanks, {{ guardian_first_name }} — {% endif %}you won't receive any further newsletter or announcement emails from Treasures Christian School.</p>
+    <p>This only affects general updates — you'll still receive emails directly related to an active application or enrolment (e.g. an admissions decision or offer).</p>
+  </div>
+</main>
+</body>
+</html>

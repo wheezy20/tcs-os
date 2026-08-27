@@ -304,3 +304,34 @@ APPLICATION_FEE_PAYMENT_INSTRUCTIONS = env(
         "GHS 200.00 → Enter Reference: name of the learner"
     ),
 )
+
+# Phase 6 — bulk/marketing email (admissions/bulk_email.py). Uses the same
+# RESEND_API_KEY as transactional email (it's a Bearer token for Resend's
+# HTTP API here rather than an SMTP password, same credential either way),
+# but a *separate* sending address/subdomain — bulk mail is far more likely
+# to generate spam complaints/bounces than a one-off confirmation email, and
+# a shared domain would let that damage the reputation of the offer/
+# confirmation emails that actually matter. Must be a domain verified
+# separately in Resend — see docs/deployment.md.
+BULK_EMAIL_FROM_EMAIL = env("BULK_EMAIL_FROM_EMAIL", default="updates@updates.tcsch.edu.gh")
+
+# Cloud Tasks — the actual background-job mechanism for dispatching a bulk
+# send without a staff member watching a spinner for minutes (see
+# docs/admissions/02-stack-and-schema.md for the throughput math: Resend's
+# 10 req/sec team-wide limit makes a synchronous per-recipient loop
+# infeasible at TCS's real family count). No task queue existed in this
+# project before this — it's genuinely new infrastructure, not a re-use of
+# an existing pattern like OFFER_EXPIRY_DAYS's lazy-expiry trick.
+GCP_PROJECT_ID = env("GCP_PROJECT_ID", default="")
+CLOUD_TASKS_LOCATION = env("CLOUD_TASKS_LOCATION", default="europe-west1")
+CLOUD_TASKS_QUEUE = env("CLOUD_TASKS_QUEUE", default="admissions-bulk-email")
+CLOUD_TASKS_MAX_ATTEMPTS = env.int("CLOUD_TASKS_MAX_ATTEMPTS", default=3)  # must match the queue's own --max-attempts
+
+# The internal batch-send endpoint isn't a public API — Cloud Tasks is its
+# only legitimate caller. Verified with a shared secret (constant-time
+# compare, see views.py) rather than full OIDC verification: simpler, no
+# extra dependency for the auth check itself, and appropriate for an
+# endpoint nothing else needs to call. Empty by default so local dev/tests
+# never accidentally ship a real secret — BulkEmailBatchSendView refuses all
+# requests while this is unset (see its own docstring).
+BULK_EMAIL_INTERNAL_SECRET = env("BULK_EMAIL_INTERNAL_SECRET", default="")

@@ -621,10 +621,61 @@ Real production log evidence: two `400`s on `PATCH .../application-drafts/<token
 
 Fixed with `lockFormAsSubmitted()`, called on a successful submit, which disables the entire form UI (nav, both step buttons, save-later) — not just the three buttons it disabled before. As defense in depth (e.g. a stale second tab left open after submitting from another one), `saveDraft()` now also recognizes an `"already been submitted"` `400` specifically and treats it as success (locking the form) rather than reporting a save failure.
 
+## Phase 6 — bulk/marketing email
+
+### Schema
+
+`Guardian` gained `bulk_email_unsubscribe_token` (unique, generated eagerly at creation — same pattern as `Offer.token`) and `bulk_email_unsubscribed_at` (null = subscribed; opt-out by default, not an explicit list). Checked only by the bulk-send recipient query (`bulk_email.compute_recipients()`) — `emails.py` (every transactional send: confirmation, offer, draft-resume) has zero references to it, a deliberate hard separation rather than a runtime toggle someone could misconfigure.
+
+`EmailCampaign`: `subject`/`body` (plain text, `{{placeholder}}`-substituted at send time — see below), optional `filter_stage`/`filter_academic_year`/`filter_campus` (blank = no filter on that dimension, AND semantics between set ones), `status` (draft/queued/sending/sent/failed), `created_by`, and denormalized `total_recipients`/`sent_count`/`failed_count` counters. `clean()` refuses to validate without `{{unsubscribe_link}}` literally present in the body — a hard guardrail, not just documentation, confirmed by testing that `full_clean()` actually rejects a body missing it.
+
+`EmailCampaignRecipient`: one row per (campaign, guardian) — the audit trail. `email` is a snapshot at send time (a Guardian's address could change later); `status` (pending/sent/failed/skipped_unsubscribed); `resend_message_id` (from the batch API's own response, kept for a possible future bounce-webhook correlation even though bounce tracking itself isn't built); `error_message`. Recipients are computed **once**, when staff click Send — not recalculated afterward, so this stays an accurate historical record even if Guardian data changes later.
+
+New permission `admissions.can_send_bulk_email` (on `EmailCampaign`), not auto-granted — same deliberate-grant treatment `can_view_health_info` got. Drafting and Preview need only the normal model permissions Django creates automatically; only the Send action itself is gated (`EmailCampaignAdmin.get_actions()`, same pattern as `can_decide` hiding `generate_offer`/`reset_offer`).
+
+**A real migration bug caught and fixed before it reached anyone:** adding `bulk_email_unsubscribe_token` as a `unique=True` field with a callable default to a table with existing rows triggers Django's own interactive "won't generate unique values" warning — sidestepped by making it nullable first, but that alone wasn't enough: Django's `AddField` computes a *callable* default **once** and applies that single value to every existing row via one UPDATE, not per-row (a known but easy-to-miss Django gotcha). Confirmed directly against the real data: all 26 existing Guardians got the identical token. Fixed by reversing the data migration and rewriting it to unconditionally assign a fresh token to every row (not filtered by `isnull`, since none were actually null), then re-verified zero duplicates before re-applying the final `unique=True` migration.
+
+### Template placeholders
+
+`bulk_email.render_template()` — a whitelisted `{{name}}` regex substitution, not Django's template engine, so a staff-authored subject/body can't execute arbitrary `{% %}` template logic (a mail-merge doesn't need that). Available: `{{guardian_first_name}}`, `{{guardian_full_name}}`, `{{student_names}}` (comma-joined across a family's children), `{{unsubscribe_link}}` (required). An unknown placeholder is left as literal text rather than silently blanked, so a typo is visible in Preview instead of vanishing.
+
+### Sending mechanism — Resend's batch API, not SMTP
+
+Every other email in this system (`emails.py`) sends via SMTP, one connection per message. At TCS's real family count (500-2,000) that's infeasible against Resend's confirmed **10 requests/second per-team** rate limit — minutes of serial sends, not viable synchronously or as a tight loop. Bulk email instead uses Resend's HTTP batch endpoint (`https://api.resend.com/emails/batch`, up to 100 personalized emails per call — confirmed empirically, not assumed from docs) via raw `urllib`, same low-dependency pattern as `storage.py`'s Supabase calls; `RESEND_API_KEY` doubles as the HTTP Bearer token here, same credential already used as the SMTP password.
+
+Confirmed directly (real test calls against Resend, using their own safe `*@resend.dev` test addresses) that the batch endpoint is **all-or-nothing at the HTTP level** — either every email in the request is accepted (200, one `{"id": ...}` per input item, same order as the request) or the whole call fails (e.g. 403 for an unverified domain). There's no partial per-item success/failure shape to handle, which meaningfully simplified the retry design below.
+
+**A real bug found only by actually sending a real batch, not by reading Resend's docs:** the first real attempt failed with a `403` and Cloudflare's own `"error code: 1010"` body — not a Resend error at all. `urllib`'s default `User-Agent` ("Python-urllib/3.x") gets blocked outright by Cloudflare (fronting `api.resend.com`) as bot traffic. `storage.py`'s Supabase calls happen not to hit this (different Cloudflare config on their side) — fixed by setting an explicit `User-Agent` header on the Resend batch request specifically.
+
+### Cloud Tasks — the background-job mechanism
+
+No task queue existed in this project before this (no Celery, no cron — same "nothing exists yet" starting point `OFFER_EXPIRY_DAYS`'s comment already noted). Flow: staff clicks Send → `EmailCampaignRecipient` rows created synchronously (fast, just DB writes) → one Cloud Task enqueued per batch of ≤100 recipients (~20 tasks for 2,000 people) → each task POSTs to `BulkEmailBatchSendView`, an internal endpoint (shared-secret header, `hmac.compare_digest` — never `==` — against `BULK_EMAIL_INTERNAL_SECRET`; refuses everything if that secret is unset, so an accidentally-empty production value can never open the endpoint to `compare_digest("", "")` matching an empty header).
+
+The queue itself is rate-limited (`--max-dispatches-per-second=5`, a real GCP queue setting — see `docs/deployment.md` step 5c) — this is the actual throttle against Resend's limit, not hand-rolled pacing in application code.
+
+**Retry safety, confirmed by directly testing both branches, not just written and assumed correct:** Cloud Tasks sends `X-CloudTasks-TaskRetryCount` on a redispatch. On a transient failure with retries remaining, recipients are left `pending` (not marked failed) and the view returns a non-2xx status so Cloud Tasks retries the same batch — confirmed via `curl` that a forced Resend failure at `retry_count=0` leaves rows `pending`. Only once `retry_count` reaches `CLOUD_TASKS_MAX_ATTEMPTS - 1` (the last allowed attempt) are recipients marked terminally `failed` — confirmed via a forced failure at `retry_count=2`. On success, a *repeated* dispatch of the same batch (simulating Cloud Tasks retrying after our own response was lost in transit despite succeeding) correctly reports `processed: 0` and touches nothing, since the handler only ever operates on rows still `status="pending"`.
+
+**A real robustness bug found and fixed during testing:** the enqueue step (`bulk_email.enqueue_campaign_send()`) can fail (confirmed directly — it raises `DefaultCredentialsError` with no GCP credentials configured, the exact failure mode a real misconfiguration would produce) — the original code let this propagate as an unhandled 500 *after* already creating the campaign's recipient rows and setting `status="queued"`, leaving a permanently stuck campaign with rows created but nothing ever dispatched. Fixed: the recipient-creation + status-update happens inside a DB transaction, and the enqueue call is wrapped separately — a failure there deletes the just-created recipient rows and reverts the campaign to `draft`, so a retry (once whatever broke is fixed) starts clean rather than needing manual DB surgery.
+
+Real Cloud Tasks integration confirmed end-to-end where possible from this environment: actual task creation against the real queue (via a temporary, immediately-revoked service account key — no long-lived credential left behind) succeeded; actual dispatch to the handler was simulated with a direct request carrying the same headers Cloud Tasks sends, since Cloud Tasks itself can't reach a local dev server's loopback address — that part can only be confirmed once this is deployed.
+
+### Sender reputation — a dedicated subdomain
+
+`BULK_EMAIL_FROM_EMAIL` defaults to `updates@updates.tcsch.edu.gh` — a separate subdomain from `DEFAULT_FROM_EMAIL`'s `tcsch.edu.gh`, verified as its own domain in Resend (`docs/deployment.md` step 6b). Bulk/marketing mail is far more likely to generate spam complaints or a high bounce rate than a one-off transactional confirmation; a shared domain would let that damage the deliverability of the offer/confirmation emails that actually matter. This is real DNS/Resend setup work still needed from the user — not something done as part of this build, unlike the GCP-side Cloud Tasks setup.
+
+### Unsubscribe flow
+
+One view (`UnsubscribeView`), token-only access control (same trust model as `Offer`/`ApplicationDraft`) — `GET` renders a human-facing confirmation page (`templates/public/unsubscribed.html`, no `frontend/*.html` counterpart needed since there's no interactive JS to preview outside Django, unlike the three form pages); `POST` is RFC 8058's one-click unsubscribe, which Gmail/Outlook fire silently server-to-server with no rendered response. Both set `Guardian.bulk_email_unsubscribed_at` idempotently.
+
+**A real bug found and fixed during testing:** the one-click `POST` failed with a real `403 CSRF verification failed` — `UnsubscribeView` is a plain Django `View`, not a DRF `APIView`, so it never got the automatic `csrf_exempt` wrapping DRF's `APIView.as_view()` applies (see the CSRF investigation elsewhere in this doc for why that automatic exemption exists at all). A mail provider's one-click POST has no browser session or CSRF cookie by design — RFC 8058 requires exactly that. Fixed with an explicit `@method_decorator(csrf_exempt, name="dispatch")`; safe here since unsubscribing is idempotent/low-stakes and the token itself is the real access control.
+
+Confirmed end-to-end with real tokens: `GET` renders the correct guardian name and the transactional-email carve-out message and sets `bulk_email_unsubscribed_at`; a repeated `GET` or `POST` doesn't reset the original timestamp; `POST` returns a real `200` with an empty body (correct RFC 8058 shape); a campaign's `compute_recipients()` correctly excludes both test guardians once unsubscribed.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
 - Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.
 - `admissions.can_view_health_info` (Phase 5) — ungranted by default; who gets it is a decision for the user, not auto-assigned.
+- `admissions.can_send_bulk_email` (Phase 6) — ungranted by default, same reasoning.
 
 ## Open questions to resolve before/during Phase 1
 

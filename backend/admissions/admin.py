@@ -1,17 +1,23 @@
+import logging
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin, StackedInline, TabularInline
 
-from . import emails, storage
+from . import bulk_email, emails, storage
 from .models import (
-    Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmergencyContact,
-    Family, Guardian, HealthInfo, Note, Offer, ReferenceCounter, Student,
+    Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmailCampaign,
+    EmailCampaignRecipient, EmergencyContact, Family, Guardian, HealthInfo, Note, Offer,
+    ReferenceCounter, Student,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GuardianInline(TabularInline):
@@ -314,10 +320,27 @@ class StudentAdmin(ModelAdmin):
     readonly_fields = ("student_id",)
 
 
+class BulkEmailSubscribedFilter(admin.SimpleListFilter):
+    title = "bulk email subscription"
+    parameter_name = "bulk_subscribed"
+
+    def lookups(self, request, model_admin):
+        return [("yes", "Subscribed"), ("no", "Unsubscribed")]
+
+    def queryset(self, request, queryset):
+        if self.value() == "yes":
+            return queryset.filter(bulk_email_unsubscribed_at__isnull=True)
+        if self.value() == "no":
+            return queryset.filter(bulk_email_unsubscribed_at__isnull=False)
+        return queryset
+
+
 @admin.register(Guardian)
 class GuardianAdmin(ModelAdmin):
-    list_display = ("full_name", "family", "relationship", "email", "phone", "town_city")
+    list_display = ("full_name", "family", "relationship", "email", "phone", "town_city", "bulk_email_unsubscribed_at")
+    list_filter = (BulkEmailSubscribedFilter,)
     search_fields = ("first_name", "surname", "email")
+    readonly_fields = ("bulk_email_unsubscribe_token",)
 
 
 @admin.register(ReferenceCounter)
@@ -355,3 +378,155 @@ class ApplicationDraftAdmin(ModelAdmin):
     @admin.display(boolean=True)
     def is_submitted(self, obj):
         return obj.is_submitted
+
+
+class EmailCampaignRecipientInline(TabularInline):
+    """The audit trail — who a campaign was actually sent to, and whether it
+    sent. Read-only: rows are only ever created by the send_campaign action
+    and only ever updated by BulkEmailBatchSendView, never hand-edited."""
+    model = EmailCampaignRecipient
+    extra = 0
+    fields = ("email", "status", "sent_at", "resend_message_id", "error_message")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(EmailCampaign)
+class EmailCampaignAdmin(ModelAdmin):
+    """Phase 6 — bulk/marketing email. Drafting and Preview need only normal
+    admin access; actually triggering a real send to hundreds/thousands of
+    families is gated behind admissions.can_send_bulk_email (not
+    auto-granted — same deliberate-grant treatment HealthInfo's permission
+    got), given the blast radius of sending the wrong campaign to everyone
+    by mistake."""
+    list_display = ("name", "status", "total_recipients", "sent_count", "failed_count", "created_at", "sent_at")
+    list_filter = ("status",)
+    search_fields = ("name", "subject")
+    readonly_fields = ("status", "created_by", "sent_at", "total_recipients", "sent_count", "failed_count")
+    inlines = [EmailCampaignRecipientInline]
+    actions = ["preview_campaign", "send_campaign"]
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if not request.user.has_perm("admissions.can_send_bulk_email"):
+            actions.pop("send_campaign", None)
+        return actions
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    @admin.action(description="Preview (renders against one real matching recipient)")
+    def preview_campaign(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one campaign to preview.", level=messages.ERROR)
+            return None
+
+        campaign = queryset.first()
+        recipients = bulk_email.compute_recipients(campaign)
+        sample_guardian = recipients.first()
+        if sample_guardian:
+            context = bulk_email.build_placeholder_context(sample_guardian)
+            sample_note = f"Rendered against a real matching recipient: {sample_guardian.full_name} <{sample_guardian.email}>"
+        else:
+            # No matching recipient yet (e.g. a narrow filter combination) —
+            # preview should still work, just with placeholder text instead
+            # of real data, so staff can proofread the template itself.
+            context = {
+                "guardian_first_name": "(guardian first name)",
+                "guardian_full_name": "(guardian full name)",
+                "student_names": "(student name(s))",
+                "unsubscribe_link": "(unsubscribe link — generated per recipient at send time)",
+            }
+            sample_note = "No recipient currently matches this campaign's filters — showing placeholder text instead of real data."
+
+        rendered_subject = bulk_email.render_template(campaign.subject, context)
+        rendered_body = bulk_email.render_template(campaign.body, context)
+
+        return TemplateResponse(
+            request,
+            "admin/admissions/emailcampaign/preview.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": f"Preview — {campaign.name}",
+                "campaign": campaign,
+                "recipient_count": recipients.count(),
+                "sample_note": sample_note,
+                "rendered_subject": rendered_subject,
+                "rendered_body": rendered_body,
+                "opts": self.model._meta,
+            },
+        )
+
+    @admin.action(description="Send (requires admissions.can_send_bulk_email)")
+    def send_campaign(self, request, queryset):
+        if not request.user.has_perm("admissions.can_send_bulk_email"):
+            self.message_user(request, "You don't have permission to send bulk email.", level=messages.ERROR)
+            return
+
+        for campaign in queryset:
+            if campaign.status != "draft":
+                self.message_user(
+                    request, f'"{campaign.name}" is already {campaign.get_status_display()} — skipped.',
+                    level=messages.WARNING,
+                )
+                continue
+
+            try:
+                campaign.full_clean()
+            except ValidationError as exc:
+                self.message_user(request, f'"{campaign.name}": {exc}', level=messages.ERROR)
+                continue
+
+            recipients = bulk_email.compute_recipients(campaign)
+            recipient_count = recipients.count()
+            if recipient_count == 0:
+                self.message_user(
+                    request, f'"{campaign.name}" has no matching recipients (all filtered out or unsubscribed) — not queued.',
+                    level=messages.WARNING,
+                )
+                continue
+
+            with transaction.atomic():
+                EmailCampaignRecipient.objects.bulk_create([
+                    EmailCampaignRecipient(campaign=campaign, guardian=guardian, email=guardian.email)
+                    for guardian in recipients
+                ])
+                campaign.total_recipients = recipient_count
+                campaign.status = "queued"
+                campaign.save(update_fields=["total_recipients", "status"])
+
+            # Enqueueing itself happens *outside* the DB transaction (Cloud
+            # Tasks is a real network call, no point holding a DB lock for
+            # it) — if it fails (e.g. a transient GCP issue), roll the
+            # recipient rows and status back to draft rather than leaving
+            # "queued" with nothing actually dispatched and no way to retry
+            # except by hand.
+            try:
+                task_count = bulk_email.enqueue_campaign_send(campaign)
+            except Exception:
+                logger.exception("Failed to enqueue Cloud Tasks for campaign %s", campaign.id)
+                EmailCampaignRecipient.objects.filter(campaign=campaign).delete()
+                campaign.total_recipients = 0
+                campaign.status = "draft"
+                campaign.save(update_fields=["total_recipients", "status"])
+                self.message_user(
+                    request,
+                    f'"{campaign.name}": could not queue the send (a background-job error) — reverted to Draft, nothing was sent. Try again once the issue is resolved.',
+                    level=messages.ERROR,
+                )
+                continue
+
+            self.message_user(
+                request,
+                f'"{campaign.name}" queued: {recipient_count} recipient(s) across {task_count} batch(es).',
+            )

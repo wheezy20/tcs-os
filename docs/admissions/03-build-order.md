@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: Phase 5 — expanded Application form, in progress**
+**Current phase: Phase 6 — bulk/marketing email, in progress**
 
 ---
 
@@ -130,10 +130,27 @@ Two later sessions on top of the base Phase 5 build, same phase — not new func
 - Root-caused (not guessed) a reported "Submitting… forever" bug: synchronous, per-email SMTP connection setup to Resend (~2.5-3s each, confirmed by direct measurement) was the dominant cost, not a frontend bug — fixed by reusing one connection for both emails per submission event. Separately root-caused a "Save & finish later" failure via production logs: the sidebar/save-later button weren't disabled after a successful submit, so further clicks PATCHed an already-submitted draft and got a real (correctly-behaving) 400 surfaced as a confusing generic error — fixed by locking the whole form on success, with a defensive fallback if that's ever bypassed (e.g. a stale second tab).
 - **Flagged, not built:** true fire-and-forget email dispatch (e.g. via Cloud Tasks) so a submission's HTTP response doesn't wait on Resend at all — would remove the remaining latency entirely, but is new GCP infrastructure with its own cost/complexity, not a code-only fix. Left for the user to decide rather than added unasked.
 
-## Phase 6 — CRM & marketing layer
+## Phase 6 — Bulk/marketing email — in progress (2026-08-27)
+
+Full plan (schema, unsubscribe flow, sending-domain and background-job recommendations) reviewed and approved before any code was written — see `04-build-log.md` for the resolutions (plain text over HTML, pure opt-out recipient base, the `google-cloud-tasks` dependency and shared-secret internal auth, a separate bulk-sending subdomain).
+
+**What shipped:**
+- `Guardian` gained `bulk_email_unsubscribe_token`/`bulk_email_unsubscribed_at` — generated eagerly for every guardian (same pattern as `Offer.token`), checked only by the bulk-send path, never by transactional email (confirmed: `emails.py` has zero references to it).
+- New `EmailCampaign` (template + optional stage/academic-year/campus filters + status) and `EmailCampaignRecipient` (the audit trail — one row per guardian per campaign, snapshotting the email address and Resend's own message id) models.
+- `{{placeholder}}` substitution (guardian name(s), student name(s), a required `{{unsubscribe_link}}` — enforced at save time, not just documented) — a small whitelisted regex replace, not Django's full template engine, so a staff-authored template can't execute arbitrary template logic.
+- Unsubscribe: one view handling both the RFC 8058 one-click `POST` (what Gmail/Outlook fire silently) and a human-facing `GET` confirmation page, token-only access control (same trust model as `Offer`/`ApplicationDraft`).
+- Sending via Resend's HTTP batch API (up to 100 personalized emails/call), not SMTP — SMTP's one-connection-per-recipient cost is what made Phase 5's submission-latency bug possible in the first place, and would be infeasible at TCS's real family count against Resend's 10 req/sec team-wide limit.
+- Cloud Tasks as the actual background-job mechanism — genuinely new GCP infrastructure (queue, IAM grants, a new pip dependency), all set up for real on the project as part of this build, not left as instructions. Queue-level rate limiting (`--max-dispatches-per-second=5`), not hand-rolled pacing in the app.
+- `admissions.can_send_bulk_email` permission, not auto-granted — same deliberate-grant treatment `can_view_health_info` got, given the blast radius of sending the wrong campaign to everyone by mistake. Drafting/Preview need only normal admin access.
+- Admin: Preview (renders against a real matching recipient, or placeholder text if none match yet) and Send actions, a read-only recipient-audit inline.
+- **Two real bugs found and fixed while testing, not before:** a Cloud Tasks enqueue failure crashed with an unhandled 500 and left orphaned "queued" campaign/recipient rows with nothing actually dispatched — fixed by making the enqueue step atomic with a clean rollback to Draft on failure. Separately, Resend's batch API (fronted by Cloudflare) outright blocked the request with a 403 because `urllib`'s default User-Agent looks bot-like — fixed by setting an explicit one. Full detail in `04-build-log.md`.
+- A dedicated bulk-sending subdomain (`updates.tcsch.edu.gh`) to isolate reputation from transactional email — DNS/Resend verification is real setup work still needed from the user (`docs/deployment.md` step 6b), not done as part of this build.
+
+**Not done here, deliberately out of scope (flagged during planning, not decided silently):** bounce/open tracking (needs Resend webhooks and, for opens, HTML email — this system is plain text throughout); per-topic/multiple mailing lists (a single unsubscribe flag covers "all bulk email," not granular topics); the older Phase 6 scope items below (lead source tracking, enquiries-before-application) — not touched by this build, still open.
+
+**Original Phase 6 scope, still open:**
 - Enquiries before application (lead capture even without a full application)
 - Lead source tracking
-- Newsletter/bulk communication tooling (ties into the branded email TCS already wants for the Preschool–JHS admissions announcement)
 
 ## Phase 7+ — Everything else in 01-vision.md
 Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics. Multi-campus removed from this list — Phase 5 built it. Revisit `01-vision.md` when you get here, don't pre-build models for these now.
