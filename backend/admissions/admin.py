@@ -408,10 +408,14 @@ class EmailCampaignAdmin(ModelAdmin):
     auto-granted — same deliberate-grant treatment HealthInfo's permission
     got), given the blast radius of sending the wrong campaign to everyone
     by mistake."""
-    list_display = ("name", "status", "total_recipients", "sent_count", "failed_count", "created_at", "sent_at")
+    list_display = (
+        "name", "status", "total_recipients", "sent_count", "failed_count", "skipped_count", "created_at", "sent_at",
+    )
     list_filter = ("status",)
     search_fields = ("name", "subject")
-    readonly_fields = ("status", "created_by", "sent_at", "total_recipients", "sent_count", "failed_count")
+    readonly_fields = (
+        "status", "created_by", "sent_at", "total_recipients", "sent_count", "failed_count", "skipped_count",
+    )
     inlines = [EmailCampaignRecipientInline]
     actions = ["preview_campaign", "send_campaign", "retry_failed_recipients"]
 
@@ -514,7 +518,7 @@ class EmailCampaignAdmin(ModelAdmin):
             # "queued" with nothing actually dispatched and no way to retry
             # except by hand.
             try:
-                task_count = bulk_email.enqueue_campaign_send(campaign)
+                task_count, skipped_count = bulk_email.enqueue_campaign_send(campaign)
             except Exception:
                 logger.exception("Failed to enqueue Cloud Tasks for campaign %s", campaign.id)
                 EmailCampaignRecipient.objects.filter(campaign=campaign).delete()
@@ -528,65 +532,90 @@ class EmailCampaignAdmin(ModelAdmin):
                 )
                 continue
 
-            self.message_user(
-                request,
-                f'"{campaign.name}" queued: {recipient_count} recipient(s) across {task_count} batch(es).',
-            )
+            queued_count = recipient_count - skipped_count
+            if queued_count == 0:
+                # Every recipient had an invalid/placeholder address — enqueue_campaign_send
+                # already finalized the campaign itself (there's no Cloud Task to do it later).
+                self.message_user(
+                    request,
+                    f'"{campaign.name}": all {skipped_count} recipient(s) had an invalid/placeholder '
+                    f'address — none were sent to Resend. Campaign marked {campaign.get_status_display()}.',
+                    level=messages.ERROR,
+                )
+            elif skipped_count:
+                self.message_user(
+                    request,
+                    f'"{campaign.name}" queued: {queued_count} recipient(s) across {task_count} batch(es) '
+                    f'— {skipped_count} skipped (invalid/placeholder address, never sent to Resend; see the recipient audit).',
+                    level=messages.WARNING,
+                )
+            else:
+                self.message_user(
+                    request,
+                    f'"{campaign.name}" queued: {queued_count} recipient(s) across {task_count} batch(es).',
+                )
 
     @admin.action(description="Retry failed recipients (requires admissions.can_send_bulk_email)")
     def retry_failed_recipients(self, request, queryset):
         """Deliberately narrower than send_campaign: only re-dispatches rows
-        currently status="failed" (e.g. a bad address that's since been
-        corrected, or a Resend outage) — never touches "sent" rows or
-        recomputes the recipient list from Guardians. A blanket
+        currently status="failed" or "skipped_invalid" (a Resend-side
+        rejection, or an address enqueue_campaign_send caught as malformed/
+        placeholder before ever calling Resend) — never touches "sent" rows
+        or recomputes the recipient list from Guardians. A blanket
         reset-and-resend would double-send anyone who already succeeded,
         which is exactly what the pending-only re-query in
         BulkEmailBatchSendView/enqueue_campaign_send is designed to prevent
         elsewhere. A campaign can carry both "sent" and "failed" rows and
-        still show overall status "sent" (see _finalize_if_done — status is
-        only "failed" when nothing succeeded at all), so this checks
-        failed_count directly rather than gating on campaign.status.
+        still show overall status "sent" (see bulk_email.finalize_campaign —
+        status is only "failed" when nothing succeeded at all), so this
+        checks the retriable count directly rather than gating on
+        campaign.status.
 
-        Also re-pulls each failed row's `email` from the live Guardian record
-        before retrying. EmailCampaignRecipient.email is normally a frozen
-        snapshot (see the model's docstring) so a "sent" record stays an
-        accurate historical log even if Guardian data changes later — but a
-        "failed" row was never actually delivered, so there's no history to
-        protect, and the whole point of retrying is usually that staff just
-        corrected a bad address on the Guardian. Without this, editing the
-        Guardian wouldn't change what a retry actually sends to."""
+        Also re-pulls each retried row's `email` from the live Guardian
+        record before retrying. EmailCampaignRecipient.email is normally a
+        frozen snapshot (see the model's docstring) so a "sent" record stays
+        an accurate historical log even if Guardian data changes later — but
+        neither a "failed" nor a "skipped_invalid" row was ever actually
+        delivered, so there's no history to protect, and the whole point of
+        retrying is usually that staff just corrected a bad address on the
+        Guardian. Without this, editing the Guardian wouldn't change what a
+        retry actually sends to. A still-bad address just gets marked
+        skipped_invalid again by enqueue_campaign_send — retrying is always
+        safe to click, never re-sends something that already succeeded."""
         if not request.user.has_perm("admissions.can_send_bulk_email"):
             self.message_user(request, "You don't have permission to send bulk email.", level=messages.ERROR)
             return
 
         for campaign in queryset:
-            failed = campaign.recipients.filter(status="failed")
-            failed_count = failed.count()
-            if failed_count == 0:
+            retriable = campaign.recipients.filter(status__in=["failed", "skipped_invalid"])
+            retriable_count = retriable.count()
+            if retriable_count == 0:
                 self.message_user(
-                    request, f'"{campaign.name}" has no failed recipients — nothing to retry.',
+                    request, f'"{campaign.name}" has no failed or skipped recipients — nothing to retry.',
                     level=messages.WARNING,
                 )
                 continue
 
             with transaction.atomic():
-                failed_rows = list(failed.select_related("guardian"))
-                for row in failed_rows:
+                retriable_rows = list(retriable.select_related("guardian"))
+                for row in retriable_rows:
                     row.email = row.guardian.email
                     row.status = "pending"
                     row.error_message = ""
-                EmailCampaignRecipient.objects.bulk_update(failed_rows, ["email", "status", "error_message"])
+                EmailCampaignRecipient.objects.bulk_update(retriable_rows, ["email", "status", "error_message"])
                 counts = campaign.recipients.aggregate(
                     sent=Count("id", filter=Q(status="sent")),
                     failed=Count("id", filter=Q(status="failed")),
+                    skipped=Count("id", filter=Q(status="skipped_invalid")),
                 )
                 campaign.sent_count = counts["sent"]
                 campaign.failed_count = counts["failed"]
+                campaign.skipped_count = counts["skipped"]
                 campaign.status = "queued"
-                campaign.save(update_fields=["sent_count", "failed_count", "status"])
+                campaign.save(update_fields=["sent_count", "failed_count", "skipped_count", "status"])
 
             try:
-                task_count = bulk_email.enqueue_campaign_send(campaign)
+                task_count, skipped_count = bulk_email.enqueue_campaign_send(campaign)
             except Exception:
                 logger.exception("Failed to enqueue retry for campaign %s", campaign.id)
                 EmailCampaignRecipient.objects.filter(campaign=campaign, status="pending").update(
@@ -595,11 +624,13 @@ class EmailCampaignAdmin(ModelAdmin):
                 counts = campaign.recipients.aggregate(
                     sent=Count("id", filter=Q(status="sent")),
                     failed=Count("id", filter=Q(status="failed")),
+                    skipped=Count("id", filter=Q(status="skipped_invalid")),
                 )
                 campaign.sent_count = counts["sent"]
                 campaign.failed_count = counts["failed"]
+                campaign.skipped_count = counts["skipped"]
                 campaign.status = "sent" if counts["sent"] > 0 else "failed"
-                campaign.save(update_fields=["sent_count", "failed_count", "status"])
+                campaign.save(update_fields=["sent_count", "failed_count", "skipped_count", "status"])
                 self.message_user(
                     request,
                     f'"{campaign.name}": could not queue the retry (a background-job error) — recipients reverted to Failed. Try again once the issue is resolved.',
@@ -607,7 +638,23 @@ class EmailCampaignAdmin(ModelAdmin):
                 )
                 continue
 
-            self.message_user(
-                request,
-                f'"{campaign.name}" retry queued: {failed_count} recipient(s) across {task_count} batch(es).',
-            )
+            retried_count = retriable_count - skipped_count
+            if retried_count == 0:
+                self.message_user(
+                    request,
+                    f'"{campaign.name}": all {skipped_count} retried recipient(s) still had an invalid/placeholder '
+                    f'address — none were sent to Resend. Fix the address on the Guardian record and retry again.',
+                    level=messages.ERROR,
+                )
+            elif skipped_count:
+                self.message_user(
+                    request,
+                    f'"{campaign.name}" retry queued: {retried_count} recipient(s) across {task_count} batch(es) '
+                    f'— {skipped_count} still invalid, not retried.',
+                    level=messages.WARNING,
+                )
+            else:
+                self.message_user(
+                    request,
+                    f'"{campaign.name}" retry queued: {retried_count} recipient(s) across {task_count} batch(es).',
+                )

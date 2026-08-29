@@ -668,6 +668,9 @@ class EmailCampaign(models.Model):
     total_recipients = models.PositiveIntegerField(default=0)
     sent_count = models.PositiveIntegerField(default=0)
     failed_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(
+        default=0, help_text="Recipients skipped before ever reaching Resend — malformed or placeholder addresses.",
+    )
 
     class Meta:
         permissions = [("can_send_bulk_email", "Can send bulk/marketing email campaigns")]
@@ -696,6 +699,7 @@ class EmailCampaignRecipient(models.Model):
         ("sent", "Sent"),
         ("failed", "Failed"),
         ("skipped_unsubscribed", "Skipped (unsubscribed)"),
+        ("skipped_invalid", "Skipped (invalid address)"),
     ]
 
     campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE, related_name="recipients")

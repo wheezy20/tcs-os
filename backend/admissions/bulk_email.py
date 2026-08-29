@@ -20,7 +20,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from django.conf import settings
-from django.db.models import Q
+from django.core.exceptions import ValidationError
+from django.core.validators import EmailValidator
+from django.db.models import Count, Q
+from django.utils import timezone
 
 from .models import Application, EmailCampaignRecipient, Guardian, Student
 
@@ -31,9 +34,38 @@ RESEND_BATCH_MAX_SIZE = 100  # Resend's own per-request cap
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
+_EMAIL_VALIDATOR = EmailValidator()
+
+# Domains Resend's batch API rejects outright, taking down the entire batch —
+# confirmed directly, not guessed: one @example.com address in an 11-row
+# batch failed all 11, with Resend's own error naming "domains like
+# `example.com`" as the reason. These are well-known placeholder domains
+# (RFC 2606 / common seed-data conventions), never real recipient addresses.
+PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.org", "example.net", "example.edu", "test.com"}
+
 
 class ResendBatchError(Exception):
     pass
+
+
+def invalid_email_reason(email):
+    """Returns a short reason a recipient's address would be rejected before
+    it's ever sent to Resend, or None if it looks sendable. Deliberately
+    narrow — catches obviously malformed syntax and known placeholder
+    domains only. This is NOT a deliverability guarantee: a syntactically
+    valid address at a domain that doesn't actually accept mail still bounces
+    *after* sending, which needs bounce-webhook handling (out of scope here,
+    see 02-stack-and-schema.md). The point is just to stop the class of bad
+    address that currently takes an entire otherwise-valid batch down with
+    it, not to replace real deliverability tracking."""
+    try:
+        _EMAIL_VALIDATOR(email)
+    except ValidationError:
+        return "Malformed email address."
+    domain = email.rsplit("@", 1)[-1].lower()
+    if domain in PLACEHOLDER_EMAIL_DOMAINS:
+        return f"Placeholder/example domain ({domain}) — not a real deliverable address."
+    return None
 
 
 def render_template(text, context):
@@ -143,26 +175,55 @@ def build_batch_payload(recipients):
 
 
 def enqueue_campaign_send(campaign):
-    """Splits the campaign's pending recipients into batches of
-    RESEND_BATCH_MAX_SIZE and creates one Cloud Task per batch. Imports
-    google.cloud.tasks_v2 lazily so the rest of this module (template
-    rendering, recipient computation — all independently testable) doesn't
-    require GCP credentials just to import."""
+    """Validates every currently-pending recipient's address *before* it's
+    grouped into a batch, then splits the survivors into batches of
+    RESEND_BATCH_MAX_SIZE and creates one Cloud Task per batch. This is the
+    single choke point for that validation — every path that marks a row
+    "pending" (send_campaign, retry_failed_recipients) always ends here
+    before Resend is ever called, so a bad address can never sneak into a
+    batch regardless of how the row got queued. Rejected rows are marked
+    "skipped_invalid" immediately and never see a Cloud Task at all, rather
+    than being sent to Resend just to fail there — this is the actual fix
+    for the all-or-nothing batch problem: one bad address used to fail
+    *every* recipient in its batch (confirmed directly), not just itself.
+
+    Imports google.cloud.tasks_v2 lazily so the rest of this module
+    (template rendering, recipient computation — all independently testable)
+    doesn't require GCP credentials just to import.
+
+    Returns (task_count, skipped_count)."""
     from google.cloud import tasks_v2
 
-    recipient_ids = list(
-        campaign.recipients.filter(status="pending").values_list("id", flat=True)
-    )
-    if not recipient_ids:
-        return 0
+    pending = list(campaign.recipients.filter(status="pending").only("id", "email"))
+    if not pending:
+        return 0, 0
+
+    invalid_rows = []
+    valid_ids = []
+    for recipient in pending:
+        reason = invalid_email_reason(recipient.email)
+        if reason:
+            recipient.status = "skipped_invalid"
+            recipient.error_message = reason
+            invalid_rows.append(recipient)
+        else:
+            valid_ids.append(recipient.id)
+
+    if invalid_rows:
+        EmailCampaignRecipient.objects.bulk_update(invalid_rows, ["status", "error_message"])
+
+    skipped_count = len(invalid_rows)
+    if not valid_ids:
+        finalize_campaign(campaign)
+        return 0, skipped_count
 
     client = tasks_v2.CloudTasksClient()
     parent = client.queue_path(settings.GCP_PROJECT_ID, settings.CLOUD_TASKS_LOCATION, settings.CLOUD_TASKS_QUEUE)
     url = f"{settings.FRONTEND_BASE_URL}/api/admissions/internal/send-campaign-batch/"
 
     task_count = 0
-    for i in range(0, len(recipient_ids), RESEND_BATCH_MAX_SIZE):
-        batch_ids = recipient_ids[i:i + RESEND_BATCH_MAX_SIZE]
+    for i in range(0, len(valid_ids), RESEND_BATCH_MAX_SIZE):
+        batch_ids = valid_ids[i:i + RESEND_BATCH_MAX_SIZE]
         body = json.dumps({"campaign_id": campaign.id, "recipient_ids": batch_ids}).encode()
         task = {
             "http_request": {
@@ -178,4 +239,30 @@ def enqueue_campaign_send(campaign):
         client.create_task(request={"parent": parent, "task": task})
         task_count += 1
 
-    return task_count
+    return task_count, skipped_count
+
+
+def finalize_campaign(campaign):
+    """Recomputes sent/failed/skipped/pending counts from the real
+    EmailCampaignRecipient rows and, once none are left "pending", sets the
+    campaign's final status. Shared by BulkEmailBatchSendView (called after
+    each batch response) and enqueue_campaign_send (called directly when
+    every pending recipient turned out to be invalid, so no Cloud Task was
+    ever created to trigger the usual finalization) — a single place that
+    decides "is this campaign done, and how did it go" rather than two
+    copies that could drift apart."""
+    counts = campaign.recipients.aggregate(
+        sent=Count("id", filter=Q(status="sent")),
+        failed=Count("id", filter=Q(status="failed")),
+        skipped=Count("id", filter=Q(status="skipped_invalid")),
+        pending=Count("id", filter=Q(status="pending")),
+    )
+    campaign.sent_count = counts["sent"]
+    campaign.failed_count = counts["failed"]
+    campaign.skipped_count = counts["skipped"]
+    update_fields = ["sent_count", "failed_count", "skipped_count"]
+    if counts["pending"] == 0:
+        campaign.status = "sent" if counts["sent"] > 0 else "failed"
+        campaign.sent_at = timezone.now()
+        update_fields += ["status", "sent_at"]
+    campaign.save(update_fields=update_fields)

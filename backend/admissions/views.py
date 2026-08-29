@@ -2,7 +2,6 @@ import hmac
 import logging
 
 from django.conf import settings
-from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -310,7 +309,7 @@ class BulkEmailBatchSendView(APIView):
             .select_related("guardian", "campaign")
         )
         if not recipients:
-            self._finalize_if_done(campaign)
+            bulk_email.finalize_campaign(campaign)
             return Response({"processed": 0})
 
         # Cloud Tasks includes this on a retried dispatch — 0 on the first
@@ -340,20 +339,5 @@ class BulkEmailBatchSendView(APIView):
                 recipient.error_message = str(exc)
                 recipient.save(update_fields=["status", "error_message"])
 
-        self._finalize_if_done(campaign)
+        bulk_email.finalize_campaign(campaign)
         return Response({"processed": len(recipients)})
-
-    def _finalize_if_done(self, campaign):
-        counts = campaign.recipients.aggregate(
-            sent=Count("id", filter=Q(status="sent")),
-            failed=Count("id", filter=Q(status="failed")),
-            pending=Count("id", filter=Q(status="pending")),
-        )
-        campaign.sent_count = counts["sent"]
-        campaign.failed_count = counts["failed"]
-        update_fields = ["sent_count", "failed_count"]
-        if counts["pending"] == 0:
-            campaign.status = "sent" if counts["sent"] > 0 else "failed"
-            campaign.sent_at = timezone.now()
-            update_fields += ["status", "sent_at"]
-        campaign.save(update_fields=update_fields)
