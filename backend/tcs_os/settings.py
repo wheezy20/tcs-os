@@ -29,6 +29,21 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 # behind Cloudflare's proxy (must include scheme, e.g. https://admissions.tcsch.edu.gh)
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
+# Cloud Run terminates TLS and forwards to this container over plain HTTP,
+# only signaling the original scheme via this header — without telling Django
+# to trust it, request.is_secure() always reads False, and SECURE_SSL_REDIRECT
+# below would redirect every already-HTTPS request right back to itself
+# (Cloudflare -> Cloud Run -> Django redirect -> Cloudflare -> ... forever).
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# All three gated on `not DEBUG`, not a separate env var — DEBUG is already
+# this project's local-dev-vs-production signal (True locally, False on Cloud
+# Run), and local dev has no TLS listener at all, so forcing these on there
+# would just break `manage.py runserver` outright rather than protect anything.
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
 
 # Application definition
 
