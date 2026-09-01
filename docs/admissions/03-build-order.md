@@ -148,9 +148,9 @@ Full plan (schema, unsubscribe flow, sending-domain and background-job recommend
 
 **Not done here, deliberately out of scope (flagged during planning, not decided silently):** bounce/open tracking (needs Resend webhooks and, for opens, HTML email — this system is plain text throughout); per-topic/multiple mailing lists (a single unsubscribe flag covers "all bulk email," not granular topics); the older Phase 6 scope items below (lead source tracking, enquiries-before-application) — not touched by this build, still open.
 
-**Original Phase 6 scope, still open:**
-- Enquiries before application (lead capture even without a full application)
-- Lead source tracking
+**Original Phase 6 scope:**
+- ~~Enquiries before application (lead capture even without a full application)~~ — done 2026-09-01: `Lead` model + two public endpoints (`/api/admissions/quick-interest/`, `/api/admissions/pdf-gate/admissions-overview/`), see `04-build-log.md`.
+- Lead source tracking — partially: `Lead.source` distinguishes the two capture points, and bulk campaigns can target `filter_lead_source`. Full campaign/UTM attribution across the funnel is still open.
 
 ## Phase 7+ — Everything else in 01-vision.md
 Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics. Multi-campus removed from this list — Phase 5 built it. Revisit `01-vision.md` when you get here, don't pre-build models for these now.

@@ -25,7 +25,7 @@ from django.core.validators import EmailValidator
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from .models import Application, EmailCampaignRecipient, Guardian, Student
+from .models import Application, EmailCampaignRecipient, Guardian, Lead, Student
 
 logger = logging.getLogger(__name__)
 
@@ -80,27 +80,56 @@ def render_template(text, context):
     return PLACEHOLDER_PATTERN.sub(replace, text)
 
 
+def _unsubscribe_url(token):
+    return f"{settings.FRONTEND_BASE_URL}/api/admissions/unsubscribe/{token}/"
+
+
 def build_placeholder_context(guardian):
     students = Student.objects.filter(family_id=guardian.family_id).distinct()
     student_names = ", ".join(s.full_name for s in students) or "your child"
-    unsubscribe_url = (
-        f"{settings.FRONTEND_BASE_URL}/api/admissions/unsubscribe/"
-        f"{guardian.bulk_email_unsubscribe_token}/"
-    )
     return {
+        # Neutral names — work for a Guardian or a Lead recipient.
+        "recipient_first_name": guardian.first_name,
+        "recipient_full_name": guardian.full_name,
+        # Back-compat aliases kept so existing campaign bodies still render.
         "guardian_first_name": guardian.first_name,
         "guardian_full_name": guardian.full_name,
         "student_names": student_names,
-        "unsubscribe_link": unsubscribe_url,
+        "unsubscribe_link": _unsubscribe_url(guardian.bulk_email_unsubscribe_token),
     }
 
 
-def compute_recipients(campaign):
-    """The base set is every Guardian not currently unsubscribed — opt-out,
-    not an explicit opt-in list, per the approved plan. filter_* fields
-    narrow that further (AND semantics); blank means no filter on that
-    dimension. Called once, at Send time — see EmailCampaign's docstring for
-    why this isn't recomputed later."""
+def build_lead_placeholder_context(lead):
+    """Same keys as build_placeholder_context so a campaign body renders
+    identically whether the recipient is a Guardian or a Lead. A Lead has no
+    family/children, so {{student_names}} falls back to the same "your child"
+    string an empty Guardian family would produce."""
+    return {
+        "recipient_first_name": lead.first_name,
+        "recipient_full_name": lead.full_name,
+        "guardian_first_name": lead.first_name,
+        "guardian_full_name": lead.full_name,
+        "student_names": "your child",
+        "unsubscribe_link": _unsubscribe_url(lead.bulk_email_unsubscribe_token),
+    }
+
+
+def context_for_recipient(recipient):
+    """recipient: an EmailCampaignRecipient (saved or unsaved). Dispatches on
+    which target it carries — exactly one of guardian/lead is set."""
+    if recipient.guardian_id is not None:
+        return build_placeholder_context(recipient.guardian)
+    return build_lead_placeholder_context(recipient.lead)
+
+
+def guardian_recipients(campaign):
+    """Guardian pool: every Guardian not currently unsubscribed (opt-out, not
+    an explicit opt-in list), narrowed by the filter_* fields (AND
+    semantics; blank = no filter). Empty when the campaign's audience
+    excludes guardians."""
+    if campaign.audience not in ("guardians", "both"):
+        return Guardian.objects.none()
+
     qs = Guardian.objects.filter(bulk_email_unsubscribed_at__isnull=True)
 
     app_filter = Q()
@@ -115,6 +144,60 @@ def compute_recipients(campaign):
         qs = qs.filter(app_filter)
 
     return qs.distinct()
+
+
+def lead_recipients(campaign):
+    """Lead pool: opted-in, not-unsubscribed Leads, optionally narrowed to a
+    single source. Empty when the campaign's audience excludes leads. The
+    Guardian filter_* fields (stage/year/campus) do not apply — a Lead has
+    none of that data."""
+    if campaign.audience not in ("leads", "both"):
+        return Lead.objects.none()
+
+    qs = Lead.objects.filter(
+        consent_to_marketing=True,
+        bulk_email_unsubscribed_at__isnull=True,
+    )
+    if campaign.filter_lead_source:
+        qs = qs.filter(source=campaign.filter_lead_source)
+    return qs
+
+
+def compute_recipient_rows(campaign):
+    """Returns a list of *unsaved* EmailCampaignRecipient rows for the
+    campaign's current audience — the caller (send_campaign) bulk_creates
+    them. Called once, at Send time; see EmailCampaign's docstring for why
+    this isn't recomputed later.
+
+    De-dupe rule for audience="both": if the same email address is both a
+    Guardian and a Lead, the Guardian row wins and the Lead row is dropped —
+    a Guardian is the richer record and its template context (real child
+    names) is strictly better.  Case-insensitive on the address."""
+    rows = []
+    seen_emails = set()
+
+    for guardian in guardian_recipients(campaign):
+        key = guardian.email.strip().lower()
+        if key in seen_emails:
+            continue
+        seen_emails.add(key)
+        rows.append(EmailCampaignRecipient(campaign=campaign, guardian=guardian, email=guardian.email))
+
+    for lead in lead_recipients(campaign):
+        key = lead.email.strip().lower()
+        if not key or key in seen_emails:
+            continue
+        seen_emails.add(key)
+        rows.append(EmailCampaignRecipient(campaign=campaign, lead=lead, email=lead.email))
+
+    return rows
+
+
+def compute_recipient_count(campaign):
+    """Recipient count for the preview screen. Builds the same rows
+    compute_recipient_rows would (so the de-dupe is reflected) and counts
+    them — a preview action, not a hot path."""
+    return len(compute_recipient_rows(campaign))
 
 
 def send_resend_batch(payload):
@@ -153,12 +236,13 @@ def send_resend_batch(payload):
 
 
 def build_batch_payload(recipients):
-    """recipients: EmailCampaignRecipient queryset (select_related('guardian')
-    is the caller's job). Returns a list of Resend email dicts, same order
-    as recipients, so a caller can zip() the response back onto each row."""
+    """recipients: EmailCampaignRecipient queryset
+    (select_related('guardian', 'lead') is the caller's job). Returns a list
+    of Resend email dicts, same order as recipients, so a caller can zip()
+    the response back onto each row."""
     payload = []
     for recipient in recipients:
-        context = build_placeholder_context(recipient.guardian)
+        context = context_for_recipient(recipient)
         subject = render_template(recipient.campaign.subject, context)
         body = render_template(recipient.campaign.body, context)
         payload.append({

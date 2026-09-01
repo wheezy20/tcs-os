@@ -3,7 +3,7 @@ from django.core.validators import RegexValidator
 from django.utils import timezone
 from rest_framework import serializers
 from .models import (
-    Campus, EmergencyContact, Family, Guardian, HealthInfo, Student, Application, Document,
+    Campus, EmergencyContact, Family, Guardian, HealthInfo, Lead, Student, Application, Document,
 )
 from .storage import ALLOWED_UPLOAD_EXTENSIONS
 
@@ -416,3 +416,70 @@ class OfferResponseSerializer(serializers.Serializer):
     only; 'pending'/'expired' aren't valid things for a parent to submit."""
 
     response = serializers.ChoiceField(choices=[("accepted", "Accepted"), ("declined", "Declined")])
+
+
+class _LeadCreateSerializer(serializers.Serializer):
+    """Shared base for the two public lead-capture endpoints. `source` is
+    NEVER accepted from the client — each view's serializer subclass fixes it
+    server-side via SOURCE. consent_to_marketing defaults False and is only
+    ever True when a form explicitly sends true (a genuine ticked opt-in);
+    an omitted or blank value is False, regardless of frontend behaviour."""
+
+    SOURCE = None  # set by subclass
+
+    name = serializers.CharField(max_length=255)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, validators=[phone_validator],
+    )
+    grade_interest = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    consent_to_marketing = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, data):
+        if not data.get("email") and not data.get("phone"):
+            raise serializers.ValidationError(
+                "Provide either an email address or a phone number."
+            )
+        return data
+
+    def create(self, validated_data):
+        return Lead.objects.create(
+            source=self.SOURCE,
+            name=validated_data["name"],
+            email=validated_data.get("email", ""),
+            phone=validated_data.get("phone", ""),
+            grade_interest=validated_data.get("grade_interest", ""),
+            consent_to_marketing=validated_data.get("consent_to_marketing", False),
+        )
+
+    def to_representation(self, instance):
+        return {
+            "id": instance.pk,
+            "source": instance.source,
+            "created_at": instance.created_at,
+        }
+
+
+class QuickInterestSerializer(_LeadCreateSerializer):
+    """POST /api/admissions/quick-interest/ — the marketing-site quick-interest
+    widget. name + (email or phone) + optional grade_interest + optional
+    opt-in checkbox."""
+
+    SOURCE = "quick_interest_widget"
+
+
+class PdfGateSerializer(_LeadCreateSerializer):
+    """POST /api/admissions/pdf-gate/admissions-overview/ — the gated
+    "Admissions Overview & Fees" download. Form collects a first name + email
+    (+ optional opt-in); email is required here because the PDF is emailed to
+    it. phone/grade_interest aren't collected on this form but the shared
+    base still accepts them if ever sent."""
+
+    SOURCE = "pdf_gate_admissions_overview"
+
+    email = serializers.EmailField(required=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["detail"] = "Check your inbox for the Admissions Overview & Fees document."
+        return data

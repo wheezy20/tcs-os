@@ -134,9 +134,25 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-# CORS — locked to real known frontend origins only, set via env.
-# e.g. CORS_ALLOWED_ORIGINS=https://admissions.tcsch.edu.gh
-CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# CORS — real known frontend origins only. The admissions app serves its own
+# forms same-origin; these entries are for the separate marketing site
+# (tcsch.edu.gh) whose PDF-gate / quick-interest widgets POST here
+# cross-origin. Env var overrides the list entirely (see docs/deployment.md
+# step 7); the defaults are the production marketing-site origins so a
+# deploy that forgets the env var still works for them.
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=["https://tcsch.edu.gh", "https://www.tcsch.edu.gh"],
+)
+
+# Regex origins — for the marketing site's Vercel preview deployments
+# (https://<anything>.vercel.app). django-cors-headers matches these in
+# addition to CORS_ALLOWED_ORIGINS. Override via env with a comma-separated
+# list of Python regexes if the preview host pattern ever changes.
+CORS_ALLOWED_ORIGIN_REGEXES = env.list(
+    "CORS_ALLOWED_ORIGIN_REGEXES",
+    default=[r"^https://[a-z0-9-]+\.vercel\.app$"],
+)
 
 
 # Django REST Framework — sensible defaults for Phase 1.
@@ -170,6 +186,11 @@ REST_FRAMEWORK = {
         # throttle normal use of the thing it was built for. See
         # admissions.views.DraftRateThrottle.
         "application_draft": "120/hour",
+        # Public lead-capture endpoints (quick-interest widget, PDF gate) on
+        # the marketing site. More generous than the default 20/hour because
+        # multiple genuine visitors routinely share one office / NAT IP
+        # there. See admissions.views.LeadRateThrottle.
+        "lead_capture": "60/hour",
     },
 }
 
@@ -289,6 +310,17 @@ FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:8000")
 # admissions/emails.py.
 ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "admissions" / "attachments"))
 INQUIRY_EMAIL_ATTACHMENTS = env.list("INQUIRY_EMAIL_ATTACHMENTS", default=[])
+
+# Files attached to the PDF-gate download email (see PdfGateCreateView /
+# admissions.emails.send_pdf_gate_email). Same mechanism as
+# INQUIRY_EMAIL_ATTACHMENTS: names are resolved against
+# ADMISSIONS_ATTACHMENTS_DIR and a missing file is logged and skipped (the
+# lead is still captured), so this is safe to ship before the real PDF
+# exists. Drop the file in under exactly this name — or override the list
+# via env — to make the download live.
+PDF_GATE_ATTACHMENTS = env.list(
+    "PDF_GATE_ATTACHMENTS", default=["admissions-overview-and-fees.pdf"],
+)
 
 # Phase 5 — expanded Application form.
 #

@@ -629,15 +629,77 @@ class Note(models.Model):
         return f"Note on {self.application} ({self.created_at:%Y-%m-%d})"
 
 
+class Lead(models.Model):
+    """A lightweight top-of-funnel contact captured *before* (or instead of)
+    a full Inquiry — from the marketing-site quick-interest widget or the
+    gated "Admissions Overview & Fees" PDF download. Deliberately flat: no
+    Family/Guardian/Student/Application, no workflow, no stage. It's a
+    queryable safety net and a bulk-email audience, nothing more — staff who
+    want to actually progress a prospect re-key them through the normal
+    Inquiry form.
+
+    At least one of email/phone is required — enforced in the serializers
+    (QuickInterestSerializer / PdfGateSerializer), the only write paths.
+
+    bulk_email_* fields mirror Guardian's exactly (same generation, same
+    opt-out semantics, same UnsubscribeView) so bulk_email.py can treat a
+    Lead and a Guardian recipient interchangeably. Marketing opt-out only —
+    Lead is never touched by transactional email (emails.py)."""
+
+    SOURCE_CHOICES = [
+        ("quick_interest_widget", "Quick-interest widget"),
+        ("pdf_gate_admissions_overview", "PDF gate — Admissions Overview & Fees"),
+    ]
+
+    name = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=32, blank=True, default="")
+    grade_interest = models.CharField(max_length=50, blank=True, default="")
+    source = models.CharField(max_length=40, choices=SOURCE_CHOICES)
+    consent_to_marketing = models.BooleanField(
+        default=False,
+        help_text="Genuine opt-in only — defaults False even if a form omits the field.",
+    )
+
+    # Same pattern as Guardian.bulk_email_* — see that model. Generated
+    # eagerly for every Lead so the unsubscribe link in a bulk email is
+    # always valid.
+    bulk_email_unsubscribe_token = models.CharField(
+        max_length=64, unique=True, default=_generate_unsubscribe_token,
+    )
+    bulk_email_unsubscribed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    @property
+    def first_name(self):
+        """Best-effort first token of the single free-text name field — Lead
+        has no first/surname split. Used for {{recipient_first_name}}."""
+        return self.name.split()[0] if self.name.strip() else ""
+
+    @property
+    def full_name(self):
+        return self.name
+
+    def __str__(self):
+        contact = self.email or self.phone or "no contact"
+        return f"{self.name} <{contact}> ({self.get_source_display()})"
+
+
 class EmailCampaign(models.Model):
-    """Phase 6 — a bulk/marketing send to Guardians (never used for
-    transactional email — those go through emails.py directly, unaffected by
-    anything here). Recipients are computed once, when staff hit Send (see
-    admin.py's send_campaign action / bulk_email.py's compute_recipients) —
-    not recalculated afterward, so this stays an accurate historical record
-    of who a real campaign actually went to even if Guardian data changes
-    later. filter_* fields are optional narrowing on top of "every Guardian
-    not currently unsubscribed" (opt-out by default, not an explicit list)."""
+    """Phase 6 — a bulk/marketing send to Guardians and/or Leads (see
+    `audience`; never used for transactional email — those go through
+    emails.py directly, unaffected by anything here). Recipients are computed
+    once, when staff hit Send (see admin.py's send_campaign action /
+    bulk_email.py's compute_recipient_rows) — not recalculated afterward, so
+    this stays an accurate historical record of who a real campaign actually
+    went to even if the underlying data changes later. The Guardian pool is
+    "every Guardian not currently unsubscribed" (opt-out) narrowed by the
+    filter_* fields; the Lead pool is opted-in, not-unsubscribed Leads
+    optionally narrowed by filter_lead_source."""
 
     STATUS_CHOICES = [
         ("draft", "Draft"),
@@ -647,19 +709,40 @@ class EmailCampaign(models.Model):
         ("failed", "Failed"),
     ]
 
+    AUDIENCE_CHOICES = [
+        ("guardians", "Guardians"),
+        ("leads", "Leads"),
+        ("both", "Guardians + Leads"),
+    ]
+
     name = models.CharField(max_length=255, help_text="Internal label — not shown to recipients")
     subject = models.CharField(max_length=255, help_text="Supports {{placeholders}} — see bulk_email.py")
     body = models.TextField(
-        help_text="Plain text. Supports {{guardian_first_name}}, {{guardian_full_name}}, "
-        "{{student_names}}, {{unsubscribe_link}} — {{unsubscribe_link}} is required.",
+        help_text="Plain text. Supports {{recipient_first_name}}, {{recipient_full_name}} "
+        "(work for both Guardians and Leads), {{guardian_first_name}}, {{guardian_full_name}} "
+        "(back-compat aliases), {{student_names}}, {{unsubscribe_link}} — "
+        "{{unsubscribe_link}} is required.",
+    )
+    audience = models.CharField(
+        max_length=10, choices=AUDIENCE_CHOICES, default="guardians",
+        help_text="Who this campaign is sent to. Leads are always further restricted to "
+        "consent_to_marketing=True and not unsubscribed.",
+    )
+    filter_lead_source = models.CharField(
+        max_length=40, choices=Lead.SOURCE_CHOICES, blank=True, default="",
+        help_text="Blank = all lead sources. Only applies when Audience includes Leads.",
     )
     filter_stage = models.CharField(
         max_length=20, choices=Application.STAGE_CHOICES, blank=True, default="",
-        help_text="Blank = no filter (every stage)",
+        help_text="Blank = no filter (every stage). Only applies to the Guardian audience.",
     )
-    filter_academic_year = models.CharField(max_length=50, blank=True, default="", help_text="Blank = no filter")
+    filter_academic_year = models.CharField(
+        max_length=50, blank=True, default="",
+        help_text="Blank = no filter. Only applies to the Guardian audience.",
+    )
     filter_campus = models.ForeignKey(
-        Campus, null=True, blank=True, on_delete=models.PROTECT, help_text="Blank = no filter",
+        Campus, null=True, blank=True, on_delete=models.PROTECT,
+        help_text="Blank = no filter. Only applies to the Guardian audience.",
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
     created_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
@@ -684,10 +767,11 @@ class EmailCampaign(models.Model):
 
 
 class EmailCampaignRecipient(models.Model):
-    """One row per Guardian a campaign was (or will be) sent to — the audit
-    trail. email is a snapshot of Guardian.email at send time, since a
-    Guardian's address could change after the fact and this should reflect
-    what was actually used. No bounced_at/opened_at here by design (see
+    """One row per recipient a campaign was (or will be) sent to — the audit
+    trail. Exactly one of guardian/lead is set (enforced by a CHECK
+    constraint); email is a snapshot of that record's address at send time,
+    since it could change afterward and this should reflect what was
+    actually used. No bounced_at/opened_at here by design (see
     docs/admissions/02-stack-and-schema.md) — that needs Resend webhooks and
     is deliberately out of scope for this first cut. resend_message_id is
     kept anyway (free, from the batch API's own response) so a future
@@ -703,7 +787,14 @@ class EmailCampaignRecipient(models.Model):
     ]
 
     campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE, related_name="recipients")
-    guardian = models.ForeignKey(Guardian, on_delete=models.CASCADE, related_name="bulk_email_recipient_records")
+    guardian = models.ForeignKey(
+        Guardian, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="bulk_email_recipient_records",
+    )
+    lead = models.ForeignKey(
+        Lead, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="bulk_email_recipient_records",
+    )
     email = models.EmailField()
     status = models.CharField(max_length=25, choices=STATUS_CHOICES, default="pending")
     resend_message_id = models.CharField(max_length=100, blank=True, default="")
@@ -711,7 +802,27 @@ class EmailCampaignRecipient(models.Model):
     error_message = models.TextField(blank=True, default="")
 
     class Meta:
-        unique_together = ("campaign", "guardian")
+        constraints = [
+            models.CheckConstraint(
+                name="emailcampaignrecipient_exactly_one_target",
+                check=(
+                    models.Q(guardian__isnull=False, lead__isnull=True)
+                    | models.Q(guardian__isnull=True, lead__isnull=False)
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["campaign", "guardian"], name="uniq_campaign_guardian",
+                condition=models.Q(guardian__isnull=False),
+            ),
+            models.UniqueConstraint(
+                fields=["campaign", "lead"], name="uniq_campaign_lead",
+                condition=models.Q(lead__isnull=False),
+            ),
+        ]
+
+    @property
+    def recipient(self):
+        return self.guardian or self.lead
 
     def __str__(self):
         return f"{self.email} — {self.campaign.name} ({self.get_status_display()})"

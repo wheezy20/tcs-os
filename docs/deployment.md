@@ -202,7 +202,9 @@ This is genuinely new DNS/Resend setup work on your end — nothing here has bee
 
 ## 7. Deploy the Cloud Run service
 
-Non-secret config as plain env vars, secrets pulled in via `--set-secrets`. `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS`/`CORS_ALLOWED_ORIGINS`/`FRONTEND_BASE_URL` are set to the real domain here — that's the one place those four actually get their production values, `settings.py` itself only has localhost dev defaults on purpose:
+Non-secret config as plain env vars, secrets pulled in via `--set-secrets`. `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS`/`FRONTEND_BASE_URL` are set to the real domain here — that's the one place they actually get their production values, `settings.py` itself only has localhost dev defaults on purpose.
+
+`CORS_ALLOWED_ORIGINS` / `CORS_ALLOWED_ORIGIN_REGEXES` are for the **separate marketing site** (`tcsch.edu.gh`) whose PDF-gate and quick-interest widgets POST here cross-origin — `settings.py` now defaults these to the production marketing origins plus `*.vercel.app` previews, so you only need the env vars below to *add* origins or override. A value with commas needs gcloud's alternate-delimiter form (`^##^KEY=a,b`), shown below:
 
 ```
 gcloud run deploy admissions \
@@ -214,7 +216,8 @@ gcloud run deploy admissions \
   --set-env-vars="DEBUG=False" \
   --set-env-vars="ALLOWED_HOSTS=admissions.tcsch.edu.gh" \
   --set-env-vars="CSRF_TRUSTED_ORIGINS=https://admissions.tcsch.edu.gh" \
-  --set-env-vars="CORS_ALLOWED_ORIGINS=https://admissions.tcsch.edu.gh" \
+  --set-env-vars="^##^CORS_ALLOWED_ORIGINS=https://tcsch.edu.gh,https://www.tcsch.edu.gh" \
+  --set-env-vars="CORS_ALLOWED_ORIGIN_REGEXES=^https://[a-z0-9-]+\.vercel\.app$" \
   --set-env-vars="FRONTEND_BASE_URL=https://admissions.tcsch.edu.gh" \
   --set-env-vars="DEFAULT_FROM_EMAIL=admissions@tcsch.edu.gh" \
   --set-env-vars="ADMISSIONS_STAFF_EMAIL=admissions@tcsch.edu.gh" \

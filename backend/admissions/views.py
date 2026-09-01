@@ -2,7 +2,7 @@ import hmac
 import logging
 
 from django.conf import settings
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -14,10 +14,10 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from . import bulk_email, emails, storage, turnstile
-from .models import ApplicationDraft, EmailCampaign, EmailCampaignRecipient, Guardian, Offer
+from .models import ApplicationDraft, EmailCampaign, EmailCampaignRecipient, Guardian, Lead, Offer
 from .serializers import (
     ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
-    OfferResponseSerializer, UploadURLRequestSerializer,
+    OfferResponseSerializer, PdfGateSerializer, QuickInterestSerializer, UploadURLRequestSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,15 @@ class DraftRateThrottle(AnonRateThrottle):
     submission endpoints' tight default rate is meant to. See
     DRAFT_THROTTLE_RATE in settings.py."""
     scope = "application_draft"
+
+
+class LeadRateThrottle(AnonRateThrottle):
+    """Public lead-capture endpoints (quick-interest, PDF gate). A dedicated
+    scope, more generous than the default "anon" 20/hour, since these live on
+    the marketing site where several genuine visitors can share one office /
+    NAT IP — same precedent as DraftRateThrottle. See
+    DEFAULT_THROTTLE_RATES["lead_capture"] in settings.py."""
+    scope = "lead_capture"
 
 
 def _turnstile_error_response(request):
@@ -77,6 +86,37 @@ class ApplicationCreateView(TurnstileProtectedCreateMixin, generics.CreateAPIVie
     def perform_create(self, serializer):
         application = serializer.save()
         emails.send_application_emails(application)
+
+
+class QuickInterestCreateView(TurnstileProtectedCreateMixin, generics.CreateAPIView):
+    """POST /api/admissions/quick-interest/ — public, the marketing-site
+    quick-interest widget. Creates a Lead (source fixed server-side) and
+    fires a staff notification. Turnstile-gated and rate-limited exactly
+    like every other public create endpoint."""
+    serializer_class = QuickInterestSerializer
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [LeadRateThrottle]
+
+    def perform_create(self, serializer):
+        lead = serializer.save()
+        emails.send_quick_interest_email(lead)
+
+
+class PdfGateCreateView(TurnstileProtectedCreateMixin, generics.CreateAPIView):
+    """POST /api/admissions/pdf-gate/admissions-overview/ — public, the gated
+    "Admissions Overview & Fees" download. Creates a Lead (source fixed
+    server-side), emails the PDF to the lead, and notifies staff. The PDF
+    itself is whatever file(s) settings.PDF_GATE_ATTACHMENTS names in
+    ADMISSIONS_ATTACHMENTS_DIR — a missing file is logged and skipped (the
+    lead is still captured), same generic mechanism as the inquiry
+    attachment."""
+    serializer_class = PdfGateSerializer
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [LeadRateThrottle]
+
+    def perform_create(self, serializer):
+        lead = serializer.save()
+        emails.send_pdf_gate_email(lead)
 
 
 class UploadURLView(APIView):
@@ -263,22 +303,28 @@ class UnsubscribeView(View):
     04-build-log.md for why that automatic exemption doesn't reach plain
     Django views). Safe here: unsubscribing is idempotent and low-stakes,
     and the token itself is the real access control, same trust model as
-    Offer/ApplicationDraft.
-    same trust model as Offer/ApplicationDraft. Only ever touches
-    Guardian.bulk_email_unsubscribed_at — never checked by transactional
-    email (emails.py), so this can't accidentally suppress an offer or
-    confirmation email."""
+    Offer/ApplicationDraft. Only ever touches the bulk_email_unsubscribed_at
+    field on a Guardian *or* a Lead (bulk email is the one place either is
+    read) — never checked by transactional email (emails.py), so this can't
+    accidentally suppress an offer or confirmation email. The same token
+    space is shared by both models; a token resolves to exactly one row."""
 
     def _unsubscribe(self, token):
-        guardian = get_object_or_404(Guardian, bulk_email_unsubscribe_token=token)
-        if guardian.bulk_email_unsubscribed_at is None:
-            guardian.bulk_email_unsubscribed_at = timezone.now()
-            guardian.save(update_fields=["bulk_email_unsubscribed_at"])
-        return guardian
+        """Returns the first name to greet on the confirmation page. Looks in
+        Guardian first, then Lead — the token is unique within each table and
+        collisions across them are astronomically unlikely (32 random bytes)."""
+        for model in (Guardian, Lead):
+            record = model.objects.filter(bulk_email_unsubscribe_token=token).first()
+            if record is not None:
+                if record.bulk_email_unsubscribed_at is None:
+                    record.bulk_email_unsubscribed_at = timezone.now()
+                    record.save(update_fields=["bulk_email_unsubscribed_at"])
+                return record.first_name
+        raise Http404("Unknown unsubscribe token.")
 
     def get(self, request, token):
-        guardian = self._unsubscribe(token)
-        return render(request, "public/unsubscribed.html", {"guardian_first_name": guardian.first_name})
+        first_name = self._unsubscribe(token)
+        return render(request, "public/unsubscribed.html", {"guardian_first_name": first_name})
 
     def post(self, request, token):
         self._unsubscribe(token)
@@ -306,7 +352,7 @@ class BulkEmailBatchSendView(APIView):
         recipient_ids = request.data.get("recipient_ids") or []
         recipients = list(
             EmailCampaignRecipient.objects.filter(id__in=recipient_ids, status="pending")
-            .select_related("guardian", "campaign")
+            .select_related("guardian", "lead", "campaign")
         )
         if not recipients:
             bulk_email.finalize_campaign(campaign)

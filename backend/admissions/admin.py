@@ -14,7 +14,7 @@ from unfold.admin import ModelAdmin, StackedInline, TabularInline
 from . import bulk_email, emails, storage
 from .models import (
     Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmailCampaign,
-    EmailCampaignRecipient, EmergencyContact, Family, Guardian, HealthInfo, Note, Offer,
+    EmailCampaignRecipient, EmergencyContact, Family, Guardian, HealthInfo, Lead, Note, Offer,
     ReferenceCounter, Student,
 )
 
@@ -381,14 +381,51 @@ class ApplicationDraftAdmin(ModelAdmin):
         return obj.is_submitted
 
 
+@admin.register(Lead)
+class LeadAdmin(ModelAdmin):
+    """A flat, queryable list of top-of-funnel contacts (quick-interest
+    widget + gated PDF download). No workflow, no inlines — staff who want
+    to progress a prospect re-key them through the normal Inquiry form. See
+    the Lead model docstring."""
+    list_display = (
+        "name", "contact", "grade_interest", "source", "consent_to_marketing",
+        "bulk_email_unsubscribed_at", "created_at",
+    )
+    list_filter = ("source", "consent_to_marketing")
+    search_fields = ("name", "email", "phone")
+    readonly_fields = ("source", "bulk_email_unsubscribe_token", "bulk_email_unsubscribed_at", "created_at")
+    ordering = ("-created_at",)
+
+    @admin.display(description="Contact")
+    def contact(self, obj):
+        return obj.email or obj.phone or "—"
+
+    def has_add_permission(self, request):
+        # Leads only ever arrive via the two public endpoints.
+        return False
+
+
 class EmailCampaignRecipientInline(TabularInline):
     """The audit trail — who a campaign was actually sent to, and whether it
     sent. Read-only: rows are only ever created by the send_campaign action
     and only ever updated by BulkEmailBatchSendView, never hand-edited."""
     model = EmailCampaignRecipient
     extra = 0
-    fields = ("email", "status", "sent_at", "resend_message_id", "error_message")
+    fields = ("recipient_label", "email", "status", "sent_at", "resend_message_id", "error_message")
     readonly_fields = fields
+
+    def get_queryset(self, request):
+        # recipient_label reaches through to guardian/lead — join them so a
+        # campaign with hundreds of recipient rows doesn't N+1 the change page.
+        return super().get_queryset(request).select_related("guardian", "lead")
+
+    @admin.display(description="Recipient")
+    def recipient_label(self, obj):
+        if obj.guardian_id:
+            return f"Guardian: {obj.guardian.full_name}"
+        if obj.lead_id:
+            return f"Lead: {obj.lead.name}"
+        return "—"
 
     def has_add_permission(self, request, obj=None):
         return False
@@ -409,12 +446,33 @@ class EmailCampaignAdmin(ModelAdmin):
     got), given the blast radius of sending the wrong campaign to everyone
     by mistake."""
     list_display = (
-        "name", "status", "total_recipients", "sent_count", "failed_count", "skipped_count", "created_at", "sent_at",
+        "name", "status", "audience", "total_recipients", "sent_count", "failed_count", "skipped_count",
+        "created_at", "sent_at",
     )
-    list_filter = ("status",)
+    list_filter = ("status", "audience")
     search_fields = ("name", "subject")
     readonly_fields = (
         "status", "created_by", "sent_at", "total_recipients", "sent_count", "failed_count", "skipped_count",
+    )
+    fieldsets = (
+        (None, {"fields": ("name", "subject", "body")}),
+        ("Audience", {
+            "fields": ("audience", "filter_lead_source"),
+            "description": "Who this goes to. Leads are always further restricted to opted-in "
+            "and not-unsubscribed. When audience is \"both\" and an address is both a Guardian "
+            "and a Lead, the Guardian wins (its template context is richer).",
+        }),
+        ("Guardian filters", {
+            "fields": ("filter_stage", "filter_academic_year", "filter_campus"),
+            "description": "Ignored unless Audience includes Guardians. Leads carry no "
+            "stage/year/campus, so these never narrow the Lead pool.",
+        }),
+        ("Status", {
+            "fields": (
+                "status", "created_by", "sent_at", "total_recipients",
+                "sent_count", "failed_count", "skipped_count",
+            ),
+        }),
     )
     inlines = [EmailCampaignRecipientInline]
     actions = ["preview_campaign", "send_campaign", "retry_failed_recipients"]
@@ -438,25 +496,36 @@ class EmailCampaignAdmin(ModelAdmin):
             return None
 
         campaign = queryset.first()
-        recipients = bulk_email.compute_recipients(campaign)
-        sample_guardian = recipients.first()
-        if sample_guardian:
-            context = bulk_email.build_placeholder_context(sample_guardian)
-            sample_note = f"Rendered against a real matching recipient: {sample_guardian.full_name} <{sample_guardian.email}>"
-        else:
-            # No matching recipient yet (e.g. a narrow filter combination) —
-            # preview should still work, just with placeholder text instead
-            # of real data, so staff can proofread the template itself.
-            context = {
-                "guardian_first_name": "(guardian first name)",
-                "guardian_full_name": "(guardian full name)",
-                "student_names": "(student name(s))",
-                "unsubscribe_link": "(unsubscribe link — generated per recipient at send time)",
-            }
-            sample_note = "No recipient currently matches this campaign's filters — showing placeholder text instead of real data."
 
-        rendered_subject = bulk_email.render_template(campaign.subject, context)
-        rendered_body = bulk_email.render_template(campaign.body, context)
+        # One rendered sample per audience type in play. audience="both"
+        # genuinely produces two different renders (a Guardian gets real
+        # child names, a Lead gets the "your child" fallback), so staff
+        # should proofread both.
+        samples = []
+        if campaign.audience in ("guardians", "both"):
+            samples.append(self._render_sample(
+                campaign, "Guardian",
+                bulk_email.guardian_recipients(campaign).first(),
+                bulk_email.build_placeholder_context,
+                {
+                    "recipient_first_name": "(first name)", "recipient_full_name": "(full name)",
+                    "guardian_first_name": "(first name)", "guardian_full_name": "(full name)",
+                    "student_names": "(child name(s))",
+                    "unsubscribe_link": "(unsubscribe link — generated per recipient at send time)",
+                },
+            ))
+        if campaign.audience in ("leads", "both"):
+            samples.append(self._render_sample(
+                campaign, "Lead",
+                bulk_email.lead_recipients(campaign).first(),
+                bulk_email.build_lead_placeholder_context,
+                {
+                    "recipient_first_name": "(first name)", "recipient_full_name": "(full name)",
+                    "guardian_first_name": "(first name)", "guardian_full_name": "(full name)",
+                    "student_names": "your child",
+                    "unsubscribe_link": "(unsubscribe link — generated per recipient at send time)",
+                },
+            ))
 
         return TemplateResponse(
             request,
@@ -465,13 +534,24 @@ class EmailCampaignAdmin(ModelAdmin):
                 **self.admin_site.each_context(request),
                 "title": f"Preview — {campaign.name}",
                 "campaign": campaign,
-                "recipient_count": recipients.count(),
-                "sample_note": sample_note,
-                "rendered_subject": rendered_subject,
-                "rendered_body": rendered_body,
+                "recipient_count": bulk_email.compute_recipient_count(campaign),
+                "samples": samples,
                 "opts": self.model._meta,
             },
         )
+
+    def _render_sample(self, campaign, label, sample_obj, context_builder, placeholder_context):
+        if sample_obj is not None:
+            context = context_builder(sample_obj)
+            note = f"{label} sample — rendered against {sample_obj.full_name} <{sample_obj.email}>"
+        else:
+            context = placeholder_context
+            note = f"{label} sample — no matching recipient yet, showing placeholder text so you can proofread the template."
+        return {
+            "note": note,
+            "subject": bulk_email.render_template(campaign.subject, context),
+            "body": bulk_email.render_template(campaign.body, context),
+        }
 
     @admin.action(description="Send (requires admissions.can_send_bulk_email)")
     def send_campaign(self, request, queryset):
@@ -493,8 +573,8 @@ class EmailCampaignAdmin(ModelAdmin):
                 self.message_user(request, f'"{campaign.name}": {exc}', level=messages.ERROR)
                 continue
 
-            recipients = bulk_email.compute_recipients(campaign)
-            recipient_count = recipients.count()
+            recipient_rows = bulk_email.compute_recipient_rows(campaign)
+            recipient_count = len(recipient_rows)
             if recipient_count == 0:
                 self.message_user(
                     request, f'"{campaign.name}" has no matching recipients (all filtered out or unsubscribed) — not queued.',
@@ -503,10 +583,7 @@ class EmailCampaignAdmin(ModelAdmin):
                 continue
 
             with transaction.atomic():
-                EmailCampaignRecipient.objects.bulk_create([
-                    EmailCampaignRecipient(campaign=campaign, guardian=guardian, email=guardian.email)
-                    for guardian in recipients
-                ])
+                EmailCampaignRecipient.objects.bulk_create(recipient_rows)
                 campaign.total_recipients = recipient_count
                 campaign.status = "queued"
                 campaign.save(update_fields=["total_recipients", "status"])
@@ -571,15 +648,15 @@ class EmailCampaignAdmin(ModelAdmin):
         checks the retriable count directly rather than gating on
         campaign.status.
 
-        Also re-pulls each retried row's `email` from the live Guardian
-        record before retrying. EmailCampaignRecipient.email is normally a
-        frozen snapshot (see the model's docstring) so a "sent" record stays
-        an accurate historical log even if Guardian data changes later — but
-        neither a "failed" nor a "skipped_invalid" row was ever actually
-        delivered, so there's no history to protect, and the whole point of
-        retrying is usually that staff just corrected a bad address on the
-        Guardian. Without this, editing the Guardian wouldn't change what a
-        retry actually sends to. A still-bad address just gets marked
+        Also re-pulls each retried row's `email` from the live Guardian or
+        Lead record before retrying. EmailCampaignRecipient.email is normally
+        a frozen snapshot (see the model's docstring) so a "sent" record
+        stays an accurate historical log even if the source record changes
+        later — but neither a "failed" nor a "skipped_invalid" row was ever
+        actually delivered, so there's no history to protect, and the whole
+        point of retrying is usually that staff just corrected a bad
+        address. Without this, editing the source record wouldn't change what
+        a retry actually sends to. A still-bad address just gets marked
         skipped_invalid again by enqueue_campaign_send — retrying is always
         safe to click, never re-sends something that already succeeded."""
         if not request.user.has_perm("admissions.can_send_bulk_email"):
@@ -597,9 +674,9 @@ class EmailCampaignAdmin(ModelAdmin):
                 continue
 
             with transaction.atomic():
-                retriable_rows = list(retriable.select_related("guardian"))
+                retriable_rows = list(retriable.select_related("guardian", "lead"))
                 for row in retriable_rows:
-                    row.email = row.guardian.email
+                    row.email = row.recipient.email
                     row.status = "pending"
                     row.error_message = ""
                 EmailCampaignRecipient.objects.bulk_update(retriable_rows, ["email", "status", "error_message"])

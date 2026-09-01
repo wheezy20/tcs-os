@@ -225,3 +225,53 @@ def send_offer_email(offer):
         ),
         recipient=guardian.email,
     )
+
+
+def _lead_staff_alert(lead, headline, connection=None):
+    consent = "yes" if lead.consent_to_marketing else "no"
+    _send(
+        subject=f"{headline} — {lead.name}",
+        message=(
+            f"{headline}.\n\n"
+            f"Name: {lead.name}\n"
+            f"Email: {lead.email or '(none)'}\n"
+            f"Phone: {lead.phone or '(none)'}\n"
+            f"Grade of interest: {lead.grade_interest or '(none)'}\n"
+            f"Marketing opt-in: {consent}\n"
+            f"Source: {lead.get_source_display()}\n\n"
+            f"Lead #{lead.pk} in Django admin."
+        ),
+        recipient=_staff_email(),
+        connection=connection,
+    )
+
+
+def send_quick_interest_email(lead):
+    """Marketing-site quick-interest widget — staff notification only. No
+    email to the lead: the widget just says "we'll be in touch"."""
+    _lead_staff_alert(lead, "New quick-interest lead")
+
+
+def send_pdf_gate_email(lead):
+    """Gated "Admissions Overview & Fees" download. Emails the document to
+    the lead (settings.PDF_GATE_ATTACHMENTS, resolved in
+    ADMISSIONS_ATTACHMENTS_DIR — a missing file is logged and skipped, the
+    lead is still captured), then notifies staff — both on one shared
+    connection. lead.email is guaranteed present here (PdfGateSerializer
+    requires it)."""
+    with _shared_connection() as connection:
+        _send(
+            subject="Your TCS Admissions Overview & Fees",
+            message=(
+                f"Dear {lead.first_name or 'parent'},\n\n"
+                "Thank you for your interest in The Charterhouse School. Our "
+                "Admissions Overview & Fees document is attached.\n\n"
+                "If you'd like to take the next step, you can start an enquiry at "
+                f"{settings.FRONTEND_BASE_URL}/inquiry\n\n"
+                "— TCS Admissions"
+            ),
+            recipient=lead.email,
+            attachments=settings.PDF_GATE_ATTACHMENTS,
+            connection=connection,
+        )
+        _lead_staff_alert(lead, "New PDF-gate lead (Admissions Overview & Fees)", connection=connection)

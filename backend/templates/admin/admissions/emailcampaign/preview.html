@@ -5,16 +5,22 @@
   <p><a href="{% url 'admin:admissions_emailcampaign_changelist' %}">&larr; Back to Email Campaigns</a></p>
 
   <h2>{{ campaign.name }}</h2>
-  <p><strong>{{ recipient_count }}</strong> recipient(s) currently match this campaign's filters.</p>
-  <p style="color: #666;"><em>{{ sample_note }}</em></p>
+  <p><strong>{{ recipient_count }}</strong> recipient(s) currently match this campaign
+     (audience: {{ campaign.get_audience_display }}).</p>
 
-  <h3>Subject</h3>
-  <div style="padding: 0.75rem 1rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 1.5rem;">
-    {{ rendered_subject }}
-  </div>
+  {% for sample in samples %}
+    <p style="color: #666;"><em>{{ sample.note }}</em></p>
 
-  <h3>Body</h3>
-  <pre style="padding: 1rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; white-space: pre-wrap; font-family: inherit;">{{ rendered_body }}</pre>
+    <h3>Subject</h3>
+    <div style="padding: 0.75rem 1rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 1rem;">
+      {{ sample.subject }}
+    </div>
+
+    <h3>Body</h3>
+    <pre style="padding: 1rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; white-space: pre-wrap; font-family: inherit;">{{ sample.body }}</pre>
+
+    {% if not forloop.last %}<hr style="margin: 2rem 0;">{% endif %}
+  {% endfor %}
 
   <p style="margin-top: 2rem;">
     <a href="{% url 'admin:admissions_emailcampaign_changelist' %}">&larr; Back to Email Campaigns</a>
