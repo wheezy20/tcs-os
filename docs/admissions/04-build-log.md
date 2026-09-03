@@ -384,3 +384,7 @@ Approved from the plan in the prior session (reuse `BULK_EMAIL_INTERNAL_SECRET`;
 **Not deployed this session.** Needs, on the next deploy: the `admissions-migrate` job for `0015`, the `admissions-transactional-email` queue created (step 5d), and the two new env vars set (step 7). A partial deploy is safe — missing any of that just keeps emails sending inline.
 
 Committed as (see git log — this session's b2 commit).
+
+## 2026-09-03 — Reference-ID formats confirmed final
+
+TCS confirmed there is no pre-existing paper/legacy student-numbering convention to reconcile against. The three formats from Phase 2.5 — `INQ-YYYY-NNNN`, `APP-YYYY-NNNN`, and the `YYPPNNNN` Student ID — are now settled, not provisional. Removed the "provisional / confirm before treating as final" language from `02-stack-and-schema.md` and `03-build-order.md`. No code change — the formats were already implemented as-is.

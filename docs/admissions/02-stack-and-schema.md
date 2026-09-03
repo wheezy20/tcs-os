@@ -153,11 +153,10 @@ below. Offer and Lead-capture emails stay synchronous.
 
 ## Phase 2.5 — reference ID numbering
 
-**Provisional pending confirmation with TCS admissions/admin staff** on whether
-a legacy paper-records numbering convention already exists (see `03-build-order.md`).
-Student ID's format below was specified directly rather than proposed, so it's
-on firmer ground than the Inquiry/Application format, but neither has been
-checked against real legacy records yet.
+**Settled (2026-09-03).** TCS confirmed no pre-existing paper/legacy
+student-numbering convention exists to reconcile against, so the three
+formats below are final — not provisional. Treat them as the system of
+record.
 
 | ID | Format | Example | Assigned when |
 |---|---|---|---|

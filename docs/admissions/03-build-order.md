@@ -58,7 +58,7 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 - Student ID classification has no code for SHS (Grade 10-12) since TCS doesn't offer it yet — a student enrolled at that level gets no ID assigned (never a guessed code) and a logged warning, so it surfaces as a visibly-missing field rather than silently wrong data
 - `reset_admissions_data` management command built (truncates all admissions tables, resets ID sequences, requires typing "yes" to confirm) — committed (`acb4589`), **built but deliberately never run**; exists for wiping test data immediately before go-live
 
-**Provisional:** none of these three formats have been confirmed against any pre-existing TCS paper/legacy student-numbering convention. Confirm before treating this as final — see `02-stack-and-schema.md`.
+**Settled (2026-09-03):** TCS confirmed there is no pre-existing paper/legacy student-numbering convention to reconcile against — the three formats (`INQ-YYYY-NNNN`, `APP-YYYY-NNNN`, `YYPPNNNN`) are final. See `02-stack-and-schema.md`.
 
 ---
 
