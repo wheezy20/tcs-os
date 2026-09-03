@@ -376,6 +376,15 @@ CLOUD_TASKS_LOCATION = env("CLOUD_TASKS_LOCATION", default="europe-west1")
 CLOUD_TASKS_QUEUE = env("CLOUD_TASKS_QUEUE", default="admissions-bulk-email")
 CLOUD_TASKS_MAX_ATTEMPTS = env.int("CLOUD_TASKS_MAX_ATTEMPTS", default=3)  # must match the queue's own --max-attempts
 
+# Transactional email (Inquiry/Application/draft-resume) is dispatched off the
+# request cycle through its own queue — a confirmation email must not sit
+# behind a draining 2,000-recipient bulk campaign. Lower dispatch rate (a
+# trickle of traffic), more retries (each one matters). Falls back to an
+# inline synchronous send if enqueueing fails (e.g. no GCP creds locally), so
+# dev and tests need no queue at all. See admissions/emails.py.
+CLOUD_TASKS_TRANSACTIONAL_QUEUE = env("CLOUD_TASKS_TRANSACTIONAL_QUEUE", default="admissions-transactional-email")
+CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS = env.int("CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS", default=5)  # must match that queue's --max-attempts
+
 # The internal batch-send endpoint isn't a public API — Cloud Tasks is its
 # only legitimate caller. Verified with a shared secret (constant-time
 # compare, see views.py) rather than full OIDC verification: simpler, no

@@ -1,4 +1,3 @@
-import hmac
 import logging
 
 from django.conf import settings
@@ -14,7 +13,11 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from . import bulk_email, emails, storage, turnstile
-from .models import ApplicationDraft, EmailCampaign, EmailCampaignRecipient, Guardian, Lead, Offer
+from .internal_auth import internal_secret_ok
+from .models import (
+    ApplicationDraft, EmailCampaign, EmailCampaignRecipient, Guardian, Lead, Offer,
+    TransactionalEmail,
+)
 from .serializers import (
     ApplicationDraftSaveSerializer, ApplicationSerializer, InquirySerializer,
     OfferResponseSerializer, PdfGateSerializer, QuickInterestSerializer, UploadURLRequestSerializer,
@@ -335,17 +338,12 @@ class BulkEmailBatchSendView(APIView):
     """Cloud Tasks' HTTP target for one batch (<=100 recipients) of a bulk
     email campaign — not a public API. Protected by a shared-secret header,
     not a DRF permission class, since "the caller is Cloud Tasks" isn't a
-    concept DRF's permission model has; compared with hmac.compare_digest,
-    not `==`, so a malformed/guessed secret can't be distinguished from a
-    correct one by response-timing. Refuses everything if the secret isn't
-    configured at all — an empty expected value must never accidentally
-    open this endpoint to compare_digest("", "")."""
+    concept DRF's permission model has (see internal_auth.internal_secret_ok
+    — constant-time compare, refuses everything if the secret is unset)."""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        expected = settings.BULK_EMAIL_INTERNAL_SECRET
-        provided = request.headers.get("X-Internal-Secret", "")
-        if not expected or not hmac.compare_digest(provided, expected):
+        if not internal_secret_ok(request):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         campaign = get_object_or_404(EmailCampaign, id=request.data.get("campaign_id"))
@@ -387,3 +385,42 @@ class BulkEmailBatchSendView(APIView):
 
         bulk_email.finalize_campaign(campaign)
         return Response({"processed": len(recipients)})
+
+
+class TransactionalEmailSendView(APIView):
+    """Cloud Tasks' HTTP target for a batch of TransactionalEmail rows
+    (Inquiry / Application / draft-resume confirmations). Same shared-secret
+    header auth as BulkEmailBatchSendView (internal_auth.internal_secret_ok),
+    not a public API. Idempotent: only ever operates on rows still
+    status="pending", so a Cloud Tasks redelivery after a lost-but-successful
+    response is a no-op. On a transient failure with retries remaining it
+    502s so Cloud Tasks retries the same batch; on the final allowed attempt
+    the still-failing rows are marked "failed"."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        if not internal_secret_ok(request):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        email_ids = request.data.get("email_ids") or []
+        rows = list(TransactionalEmail.objects.filter(id__in=email_ids, status="pending"))
+        if not rows:
+            return Response({"processed": 0})
+
+        retry_count = int(request.headers.get("X-CloudTasks-TaskRetryCount", 0))
+        is_last_attempt = retry_count >= settings.CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS - 1
+
+        sent = emails.send_transactional_rows(rows, is_last_attempt=is_last_attempt)
+
+        still_pending = TransactionalEmail.objects.filter(
+            id__in=email_ids, status="pending"
+        ).exists()
+        if still_pending and not is_last_attempt:
+            # Some rows transiently failed and can still be retried — signal
+            # Cloud Tasks to redispatch the whole batch (the pending-only
+            # re-query above makes that safe).
+            return Response(
+                {"detail": "some rows still pending, will retry", "sent": sent},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"processed": len(rows), "sent": sent})

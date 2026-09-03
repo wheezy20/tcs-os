@@ -826,3 +826,54 @@ class EmailCampaignRecipient(models.Model):
 
     def __str__(self):
         return f"{self.email} — {self.campaign.name} ({self.get_status_display()})"
+
+
+class TransactionalEmail(models.Model):
+    """A single parent/staff notification email (Inquiry, Application, or
+    draft-resume), captured as a rendered snapshot so it can be sent
+    *outside* the submission's request/response cycle — see
+    admissions/emails.py's `enqueue_submission_emails` and
+    `TransactionalEmailSendView`. The submission writes its real DB records
+    and returns 201 immediately; a Cloud Task then delivers these rows.
+
+    Deliberately NOT used for Offer emails or the Lead capture emails —
+    those are staff-triggered or already off the critical path and stay
+    synchronous.
+
+    `attachments` holds filenames only (resolved against
+    ADMISSIONS_ATTACHMENTS_DIR at send time) — never file bytes, which
+    wouldn't fit a Cloud Tasks payload anyway."""
+
+    KIND_CHOICES = [
+        ("inquiry_parent", "Inquiry — parent confirmation"),
+        ("inquiry_staff", "Inquiry — staff alert"),
+        ("application_parent", "Application — parent confirmation"),
+        ("application_staff", "Application — staff alert"),
+        ("draft_resume", "Application draft — resume link"),
+    ]
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+    ]
+
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    to_email = models.EmailField()
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    attachments = models.JSONField(default=list, blank=True, help_text="Filenames, resolved against ADMISSIONS_ATTACHMENTS_DIR")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    application = models.ForeignKey(
+        "Application", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="transactional_emails",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} → {self.to_email} ({self.get_status_display()})"

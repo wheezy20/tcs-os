@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: none active — Phases 1–6 DONE. Next up is either a scoped Phase 6.1 (bounce/open tracking, topic-level opt-outs) or Phase 7+ from `01-vision.md`. Several operational go-live items remain — see `docs/deployment.md` and the Phase 6 entry below.**
+**Current phase: none active — Phases 1–6 DONE, plus post-Phase-6 follow-ups (a7 inquiry PDF attachment, b3 nationality typeahead, b2 async transactional email — all 2026-09-03, `admissions/tests.py` at 39 tests). Next up is either a scoped Phase 6.1 (bounce/open tracking, topic-level opt-outs) or Phase 7+ from `01-vision.md`. Several operational go-live items remain, and b2 needs deploying — see `docs/deployment.md`'s "Current deployment state".**
 
 ---
 
@@ -128,7 +128,7 @@ Two later sessions on top of the base Phase 5 build, same phase — not new func
 - Nationality changed from free text to a dropdown (ISO 3166-1 country list) — was previously going to require hand-typing a country list; fetched a real dataset instead. See `04-build-log.md` for the common-name adjustments made for a parent-facing field. *(2026-09-03: trimmed to 241 entries — dropped 8 ISO entries with no permanent civilian population — and converted from a `<select>` to a native `<input list>`/`<datalist>` typeahead with client-side list validation. `02-stack-and-schema.md` has the exact cut.)*
 - Academic year format changed from a single year (`2026`) to a school year (`2026/2027`), matching how this was originally scoped back in Phase 1 — pure frontend change, no migration, since `academic_year` was always a free `CharField` with no format constraint.
 - Root-caused (not guessed) a reported "Submitting… forever" bug: synchronous, per-email SMTP connection setup to Resend (~2.5-3s each, confirmed by direct measurement) was the dominant cost, not a frontend bug — fixed by reusing one connection for both emails per submission event. Separately root-caused a "Save & finish later" failure via production logs: the sidebar/save-later button weren't disabled after a successful submit, so further clicks PATCHed an already-submitted draft and got a real (correctly-behaving) 400 surfaced as a confusing generic error — fixed by locking the whole form on success, with a defensive fallback if that's ever bypassed (e.g. a stale second tab).
-- **Flagged, not built:** true fire-and-forget email dispatch (e.g. via Cloud Tasks) so a submission's HTTP response doesn't wait on Resend at all — would remove the remaining latency entirely, but is new GCP infrastructure with its own cost/complexity, not a code-only fix. Left for the user to decide rather than added unasked.
+- **Flagged, not built** *(built 2026-09-03, see the build log's b2 entry)*: true fire-and-forget email dispatch (via Cloud Tasks) so a submission's HTTP response doesn't wait on Resend at all. Now done — `TransactionalEmail` model (migration `0015`) + a dedicated `admissions-transactional-email` queue + `TransactionalEmailSendView`, scoped to Inquiry/Application/draft-resume (Offer stays synchronous). Falls back to inline send when no queue is configured, so dev/tests are unaffected. Not yet deployed — see `docs/deployment.md`'s "Current deployment state".
 
 ## Phase 6 — Bulk/marketing email — DONE (base 2026-08-27; production incident + retry mechanism 2026-08-28; deferred "enquiries before application" scope 2026-09-01)
 

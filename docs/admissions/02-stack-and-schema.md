@@ -146,6 +146,11 @@ per child — a 2-sibling Inquiry still sends exactly 2 emails). Plain text,
 `admissions/emails.py`, sent via `EMAIL_BACKEND` (console in dev). Failures are
 logged and swallowed, never block the actual Inquiry/Application from saving.
 
+Since 2026-09-03 the Inquiry / Application / draft-resume emails don't send
+*during* the request — they're rendered into `TransactionalEmail` rows and
+delivered by a Cloud Task. See "Transactional email — off the request cycle"
+below. Offer and Lead-capture emails stay synchronous.
+
 ## Phase 2.5 — reference ID numbering
 
 **Provisional pending confirmation with TCS admissions/admin staff** on whether
@@ -723,6 +728,62 @@ Both `AllowAny` + `TurnstileProtectedCreateMixin` (same bot-protection gate as I
 ### CORS
 
 `settings.CORS_ALLOWED_ORIGINS` now defaults to `https://tcsch.edu.gh` + `https://www.tcsch.edu.gh` — the **separate marketing site** whose widgets POST here cross-origin. The admissions app's own forms are same-origin and need no entry. New `settings.CORS_ALLOWED_ORIGIN_REGEXES`, default `^https://[a-z0-9-]+\.vercel\.app$`, covers the marketing site's Vercel preview deployments. Both are env-overridable; the live Cloud Run service sets `CORS_ALLOWED_ORIGINS` as an env var (which overrides the code default entirely), so `docs/deployment.md` step 7 sets both there using gcloud's `^##^` alternate-delimiter form. Verified live 2026-09-02: preflight from `tcsch.edu.gh` and a `*.vercel.app` host both echo `access-control-allow-origin`; an unlisted origin gets none.
+
+## Transactional email — off the request cycle (b2, 2026-09-03)
+
+The Inquiry / Application / draft-resume confirmation + staff-alert emails used
+to be sent synchronously inside the submission's `perform_create` — with a
+shared SMTP connection (Phase 5 fix) that roughly halved it, but the response
+still waited ~3 s on Resend. They now go through Cloud Tasks, reusing the
+Phase 6 infrastructure.
+
+**Flow.** The view still calls `emails.send_inquiry_emails` /
+`send_application_emails` / `send_draft_resume_email` — unchanged names,
+unchanged signatures, so the views themselves didn't change. Those now:
+build each message (identical text), `bulk_create` a `TransactionalEmail` row
+per message (`status="pending"`), and enqueue **one** Cloud Task carrying the
+row ids to `POST /api/admissions/internal/send-transactional-email/`. The view
+returns `201` immediately — **response contract unchanged**, just faster; the
+email lands a few seconds later.
+
+**`TransactionalEmail` model** (migration `0015`): `kind`
+(inquiry_parent/inquiry_staff/application_parent/application_staff/draft_resume),
+`to_email`, `subject`, `body` (rendered snapshots), `attachments` (filenames
+only — resolved against `ADMISSIONS_ATTACHMENTS_DIR` at send time, never
+bytes, which wouldn't fit a task payload), `status`
+(pending/sent/failed), `attempts`, `last_error`, nullable `application` FK,
+`created_at`/`sent_at`. `TransactionalEmailAdmin` is view-only with a
+`resend_failed` action (re-queues `failed` rows; falls back to inline send if
+the queue is down).
+
+**Worker** (`TransactionalEmailSendView`): shared-secret header auth via the
+new `admissions/internal_auth.internal_secret_ok` (extracted from
+`BulkEmailBatchSendView`, which now uses it too) — **reuses
+`BULK_EMAIL_INTERNAL_SECRET`**, same trust boundary. Only ever operates on
+rows still `pending`, so a Cloud Tasks redelivery is a no-op (`processed: 0`).
+Per-row: on failure bump `attempts`; mark `failed` + store `last_error` only
+on the last allowed attempt (`X-CloudTasks-TaskRetryCount >=
+CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS - 1`), otherwise leave `pending` and
+502 so Cloud Tasks retries the batch. Same retry-safety shape as
+`BulkEmailBatchSendView`.
+
+**Dedicated queue** `admissions-transactional-email` (`deployment.md` step 5d),
+not the bulk queue — a confirmation email must not queue behind a draining
+2,000-recipient campaign. `--max-dispatches-per-second=2`, `--max-attempts=5`.
+
+**Fallback / dev / tests.** `enqueue_transactional_ids` fast-fails with a
+`RuntimeError` when `GCP_PROJECT_ID` is unset (before building any gRPC
+client), and `enqueue_submission_emails` catches *any* enqueue failure and
+**sends the rows inline right then**. So: no queue configured, no GCP creds, a
+transient Cloud Tasks error → behaviour is exactly the old synchronous path,
+logged. Local dev and the test suite need zero Cloud Tasks setup.
+
+**Scope.** Deliberately Inquiry / Application / draft-resume only — the public,
+parent-is-waiting paths. `send_offer_email` (staff clicks "Generate Offer" in
+admin) and the Lead-capture emails stay synchronous: staff-initiated or
+already off the critical path, and routing an admin action through a queue
+would add a failure mode to a workflow that currently gives immediate
+feedback. They share `_deliver()`, so migrating them later is a small change.
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 

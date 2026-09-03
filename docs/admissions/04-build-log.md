@@ -359,3 +359,28 @@ Two low-risk items from the outstanding-work audit, built directly. A third (b2,
 **Neither a7 nor b3 needs a migration.** Both want a redeploy to reach production (settings change + template change). Not deployed in this session — bundled for the next deploy, along with b2 if that plan is approved.
 
 Committed as (see git log — this session's a7/b3 commit).
+
+## 2026-09-03 — b2: decouple transactional email from the request/response cycle
+
+Approved from the plan in the prior session (reuse `BULK_EMAIL_INTERNAL_SECRET`; leave Offer and other admin-triggered emails synchronous). Inquiry / Application / draft-resume confirmation + staff-alert emails now go through Cloud Tasks instead of blocking the submission response (~3 s on Resend even after Phase 5's shared-connection fix).
+
+**What shipped:**
+- **`TransactionalEmail` model** (migration `0015`, additive/safe) — rendered snapshot per email: `kind`, `to_email`, `subject`, `body`, `attachments` (filenames only), `status` (pending/sent/failed), `attempts`, `last_error`, nullable `application` FK, `created_at`/`sent_at`.
+- **`emails.py` refactor** — `_send()` split into `_deliver()` (raises) + `_send()` (swallows + logs, for the still-synchronous Offer/Lead senders). `send_inquiry_emails` / `send_application_emails` / `send_draft_resume_email` keep their names/signatures (views unchanged) but now build message specs → `bulk_create` pending rows → `enqueue_submission_emails` enqueues one Cloud Task. `send_transactional_rows()` delivers still-`pending` rows over one shared SMTP connection with per-row status + the same last-attempt/keep-pending retry logic as `BulkEmailBatchSendView`.
+- **`admissions/internal_auth.py`** — `internal_secret_ok(request)` extracted from `BulkEmailBatchSendView` (which now uses it) and reused by the new worker. One secret (`BULK_EMAIL_INTERNAL_SECRET`), constant-time compare, refuses when unset.
+- **`TransactionalEmailSendView`** at `POST /api/admissions/internal/send-transactional-email/` — the Cloud Tasks target. Pending-only re-query (idempotent redelivery → `processed: 0`); 502 to trigger a retry while rows are still pending and attempts remain; marks `failed` with `last_error` on the final attempt (`CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS`).
+- **Dedicated queue** `admissions-transactional-email` (`deployment.md` step 5d) — `--max-dispatches-per-second=2`, `--max-attempts=5`. Separate from the bulk queue so a confirmation email can't queue behind a draining campaign. New settings `CLOUD_TASKS_TRANSACTIONAL_QUEUE` / `CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS`.
+- **`TransactionalEmailAdmin`** — view-only list (kind/to/status/attempts/dates) + `resend_failed` action (re-queues `failed` rows; inline-sends if the queue is unavailable).
+- **Fast-fail fallback** — `enqueue_transactional_ids` raises immediately when `GCP_PROJECT_ID` is unset (before constructing any gRPC client), and `enqueue_submission_emails` catches *any* enqueue error and sends the rows inline right then. So no-queue / no-creds / transient-failure all degrade to exactly the old synchronous behaviour, logged. Local dev and CI need no Cloud Tasks setup.
+
+**Response contract:** unchanged. Same JSON, same `201`; only the timing differs (fast response, email a few seconds later). The frontend's "Still submitting…" reassurance timer and `lockFormAsSubmitted()` key off the response and still work.
+
+**Testing:** 12 new tests in `admissions/tests.py` (27 → **39, all green**, ~3.5 s on in-memory SQLite):
+- `TransactionalEmailAsyncPathTests` — submission persists 2 pending rows + enqueues once, `mail.outbox` empty (mocked enqueue); worker then delivers them with the PDF on the parent email; enqueue failure → inline fallback sends immediately; `GCP_PROJECT_ID=""` → fast-fail → inline delivery.
+- `TransactionalEmailWorkerTests` — missing / wrong / unset-expected secret → 403; happy path marks `sent`; redelivery of the same batch is a no-op (`processed: 0`, no double-send); transient `_deliver` failure at retry 0 keeps rows `pending` + 502 + no `last_error`; failure at the final attempt marks `failed` with `last_error`; `resend_failed` admin action re-queues and (queue unavailable in tests) inline-sends.
+- The a7 `InquiryEmailAttachmentTests` were pinned with `@override_settings(GCP_PROJECT_ID="")` so they exercise the inline path deterministically (and don't pay a real gRPC credential timeout — that was making the suite take ~52 s before the fast-fail guard).
+- Migration drift check clean (`makemigrations --check`).
+
+**Not deployed this session.** Needs, on the next deploy: the `admissions-migrate` job for `0015`, the `admissions-transactional-email` queue created (step 5d), and the two new env vars set (step 7). A partial deploy is safe — missing any of that just keeps emails sending inline.
+
+Committed as (see git log — this session's b2 commit).

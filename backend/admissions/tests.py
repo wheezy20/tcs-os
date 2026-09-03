@@ -16,13 +16,16 @@ from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from rest_framework.test import APIClient
 
-from . import bulk_email
+from . import bulk_email, emails
 from .models import (
     Application, Campus, EmailCampaign, EmailCampaignRecipient, Family, Guardian, Lead, Student,
+    TransactionalEmail,
 )
 
 QUICK_INTEREST_URL = "/api/admissions/quick-interest/"
 PDF_GATE_URL = "/api/admissions/pdf-gate/admissions-overview/"
+INQUIRY_URL = "/api/admissions/inquiries/"
+TRANSACTIONAL_SEND_URL = "/api/admissions/internal/send-transactional-email/"
 
 _TURNSTILE_OK = mock.patch("admissions.turnstile.verify_turnstile_token", return_value=None)
 
@@ -338,6 +341,7 @@ class UnsubscribeTests(TestCase):
         self.assertEqual(rows, [])
 
 
+@override_settings(GCP_PROJECT_ID="")  # force the inline-send path (b2), deterministic + fast
 class InquiryEmailAttachmentTests(_PublicEndpointBase):
     """a7 — the Inquiry parent-confirmation email carries the Admissions
     Overview & Fees PDF (settings.INQUIRY_EMAIL_ATTACHMENTS), resolved via the
@@ -384,3 +388,165 @@ class InquiryEmailAttachmentTests(_PublicEndpointBase):
         self.assertEqual(resp.status_code, 201)
         to_parent = [m for m in mail.outbox if m.to == ["ama@example-domain.gh"]][0]
         self.assertEqual(to_parent.attachments, [])
+
+
+_INQUIRY_PAYLOAD = {
+    "referral_source": "website",
+    "guardians": [{
+        "surname": "Owusu", "first_name": "Efua", "relationship": "mother",
+        "religion": "Christian", "address": "5 Ridge Rd", "town_city": "Accra",
+        "phone": "+233209876543", "email": "efua@example-domain.gh",
+    }],
+    "students": [{
+        "full_name": "Kwabena Owusu", "date_of_birth": "2015-06-10",
+        "current_school": "Sunrise Prep", "current_grade": "Grade 4",
+        "year_group_applied_for": "Grade 5", "academic_year": "2026/2027",
+        "month_of_enrollment": "September",
+    }],
+}
+
+
+class TransactionalEmailAsyncPathTests(_PublicEndpointBase):
+    """b2 — Inquiry/Application emails go through TransactionalEmail rows +
+    a Cloud Task instead of blocking the response."""
+
+    def test_submission_persists_rows_and_enqueues_without_sending_inline(self):
+        with mock.patch("admissions.emails.enqueue_transactional_ids") as enq:
+            resp = self.client.post(INQUIRY_URL, _INQUIRY_PAYLOAD, format="json")
+
+        self.assertEqual(resp.status_code, 201)
+        # Nothing sent synchronously — the enqueue was mocked as a no-op.
+        self.assertEqual(mail.outbox, [])
+        rows = TransactionalEmail.objects.order_by("kind")
+        self.assertEqual([r.kind for r in rows], ["inquiry_parent", "inquiry_staff"])
+        self.assertTrue(all(r.status == "pending" for r in rows))
+        self.assertEqual(rows.get(kind="inquiry_parent").to_email, "efua@example-domain.gh")
+        enq.assert_called_once()
+        self.assertCountEqual(list(enq.call_args[0][0]), list(rows.values_list("id", flat=True)))
+
+    def test_worker_delivers_pending_rows(self):
+        with mock.patch("admissions.emails.enqueue_transactional_ids"):
+            self.client.post(INQUIRY_URL, _INQUIRY_PAYLOAD, format="json")
+        ids = list(TransactionalEmail.objects.values_list("id", flat=True))
+
+        with override_settings(BULK_EMAIL_INTERNAL_SECRET="s3cr3t"):
+            resp = self.client.post(
+                TRANSACTIONAL_SEND_URL, {"email_ids": ids}, format="json",
+                HTTP_X_INTERNAL_SECRET="s3cr3t",
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["sent"], 2)
+        self.assertEqual(
+            set(TransactionalEmail.objects.values_list("status", flat=True)), {"sent"},
+        )
+        parent = [m for m in mail.outbox if m.to == ["efua@example-domain.gh"]][0]
+        self.assertEqual([a[0] for a in parent.attachments], ["admissions-overview-and-fees.pdf"])
+
+    def test_enqueue_failure_falls_back_to_inline_send(self):
+        with mock.patch(
+            "admissions.emails.enqueue_transactional_ids",
+            side_effect=RuntimeError("no GCP creds"),
+        ):
+            resp = self.client.post(INQUIRY_URL, _INQUIRY_PAYLOAD, format="json")
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # sent inline, right away
+        self.assertEqual(
+            set(TransactionalEmail.objects.values_list("status", flat=True)), {"sent"},
+        )
+
+    @override_settings(GCP_PROJECT_ID="")
+    def test_no_queue_configured_still_delivers(self):
+        # GCP_PROJECT_ID unset -> enqueue_transactional_ids raises immediately
+        # (the fast-fail guard) and the inline fallback takes over. Proves
+        # dev/CI need no queue at all, with no slow gRPC/credential timeout.
+        resp = self.client.post(INQUIRY_URL, _INQUIRY_PAYLOAD, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertEqual(TransactionalEmail.objects.filter(status="sent").count(), 2)
+
+
+@override_settings(
+    BULK_EMAIL_INTERNAL_SECRET="s3cr3t",
+    CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS=5,
+    GCP_PROJECT_ID="",  # resend_failed's enqueue fast-fails to inline
+)
+class TransactionalEmailWorkerTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.rows = TransactionalEmail.objects.bulk_create([
+            TransactionalEmail(kind="inquiry_parent", to_email="p@example-domain.gh",
+                               subject="Hi", body="body"),
+            TransactionalEmail(kind="inquiry_staff", to_email="staff@example-domain.gh",
+                               subject="New", body="body"),
+        ])
+        self.ids = [r.id for r in self.rows]
+
+    def _post(self, secret="s3cr3t", retry="0", ids=None):
+        return self.client.post(
+            TRANSACTIONAL_SEND_URL, {"email_ids": self.ids if ids is None else ids},
+            format="json",
+            HTTP_X_INTERNAL_SECRET=secret,
+            HTTP_X_CLOUDTASKS_TASKRETRYCOUNT=retry,
+        )
+
+    def test_missing_secret_is_403(self):
+        resp = self.client.post(TRANSACTIONAL_SEND_URL, {"email_ids": self.ids}, format="json")
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(mail.outbox, [])
+
+    def test_wrong_secret_is_403(self):
+        self.assertEqual(self._post(secret="nope").status_code, 403)
+
+    def test_unset_expected_secret_refuses_even_with_header(self):
+        with override_settings(BULK_EMAIL_INTERNAL_SECRET=""):
+            self.assertEqual(self._post(secret="").status_code, 403)
+
+    def test_happy_path_marks_sent(self):
+        resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {"processed": 2, "sent": 2})
+        self.assertEqual(set(r.status for r in TransactionalEmail.objects.all()), {"sent"})
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_redelivery_is_idempotent(self):
+        self._post()
+        mail.outbox.clear()
+        resp = self._post()  # same batch again
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["processed"], 0)
+        self.assertEqual(mail.outbox, [])
+
+    def test_transient_failure_keeps_pending_and_502s(self):
+        with mock.patch("admissions.emails._deliver", side_effect=RuntimeError("smtp down")):
+            resp = self._post(retry="0")
+        self.assertEqual(resp.status_code, 502)
+        rows = TransactionalEmail.objects.all()
+        self.assertEqual(set(r.status for r in rows), {"pending"})
+        self.assertEqual(set(r.attempts for r in rows), {1})
+        self.assertEqual([r.last_error for r in rows], ["", ""])
+
+    def test_final_attempt_marks_failed(self):
+        with mock.patch("admissions.emails._deliver", side_effect=RuntimeError("smtp down")):
+            resp = self._post(retry="4")  # MAX_ATTEMPTS - 1
+        self.assertEqual(resp.status_code, 200)
+        rows = TransactionalEmail.objects.all()
+        self.assertEqual(set(r.status for r in rows), {"failed"})
+        self.assertTrue(all("smtp down" in r.last_error for r in rows))
+
+    def test_resend_failed_admin_action_requeues_and_sends(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+        from .admin import TransactionalEmailAdmin
+
+        TransactionalEmail.objects.update(status="failed", last_error="old error")
+        admin_obj = TransactionalEmailAdmin(TransactionalEmail, AdminSite())
+
+        request = RequestFactory().post("/admin/")
+        request._messages = mock.Mock()
+        admin_obj.resend_failed(request, TransactionalEmail.objects.all())
+
+        rows = TransactionalEmail.objects.all()
+        self.assertEqual(set(r.status for r in rows), {"sent"})  # inline fallback (no queue)
+        self.assertEqual([r.last_error for r in rows], ["", ""])
+        self.assertEqual(len(mail.outbox), 2)

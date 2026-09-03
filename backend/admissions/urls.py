@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     ApplicationCreateView, ApplicationDraftDetailView, ApplicationDraftSubmitView, ApplicationDraftView,
     BulkEmailBatchSendView, InquiryCreateView, OfferRespondView, PdfGateCreateView,
-    QuickInterestCreateView, UnsubscribeView, UploadURLView,
+    QuickInterestCreateView, TransactionalEmailSendView, UnsubscribeView, UploadURLView,
 )
 
 urlpatterns = [
@@ -21,4 +21,9 @@ urlpatterns = [
     ),
     path("unsubscribe/<str:token>/", UnsubscribeView.as_view(), name="bulk-email-unsubscribe"),
     path("internal/send-campaign-batch/", BulkEmailBatchSendView.as_view(), name="bulk-email-send-batch"),
+    path(
+        "internal/send-transactional-email/",
+        TransactionalEmailSendView.as_view(),
+        name="transactional-email-send",
+    ),
 ]

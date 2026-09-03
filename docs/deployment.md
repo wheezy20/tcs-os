@@ -12,7 +12,7 @@ Read `shared-stack.md` first for the overall architecture this assumes (Supabase
 
 - Service `admissions` in `europe-west1`, project `tcs-os`, serving revision `admissions-00019-qm7`. Custom domain resolves and serves over HTTPS — steps 1–4, 7, 11, 12 are effectively done (the CNAME to `ghs.googlehosted.com` is in place and routing).
 - Secret Manager holds `admissions-secret-key`, `admissions-database-url`, `admissions-supabase-key`, `admissions-resend-key`, `admissions-turnstile-secret`, `admissions-bulk-email-secret`. IAM bound to the `admissions-runner@tcs-os.iam.gserviceaccount.com` runtime SA (step 3).
-- `admissions-migrate` Cloud Run Job exists and has been run through migration `0014` (step 5). `admissions-configure-storage` job pattern from step 5b has been run against the real bucket.
+- `admissions-migrate` Cloud Run Job exists and has been run through migration `0014` (step 5). `admissions-configure-storage` job pattern from step 5b has been run against the real bucket. **Migration `0015` (TransactionalEmail, b2) is committed but not yet applied to prod — run the migrate job on the next deploy.**
 - `admissions-bulk-email` Cloud Tasks queue exists (`--max-dispatches-per-second=5`, `--max-attempts=3`) — step 5c done.
 - Resend: **both** sending domains verified — `tcsch.edu.gh` (step 6) and `updates.tcsch.edu.gh` (step 6b), the latter confirmed `"status": "verified"` via a real `GET /domains` call on 2026-08-28. A real Phase 6 campaign has been sent in production.
 - All step-7 env vars are set on the live service, including Phase 6's six (`GCP_PROJECT_ID` etc.) and the 2026-09-02 CORS pair (`CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGIN_REGEXES`).
@@ -20,6 +20,7 @@ Read `shared-stack.md` first for the overall architecture this assumes (Supabase
 
 **Genuinely still outstanding:**
 
+- **b2 — transactional-email async path (2026-09-03)**: not yet deployed. Needs (a) `gcloud run jobs execute admissions-migrate` for migration `0015`, (b) the `admissions-transactional-email` Cloud Tasks queue created (step 5d), and (c) the two new env vars set on the service (`CLOUD_TASKS_TRANSACTIONAL_QUEUE`, `CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS` — step 7). Until then, or if any of that is missing, the app sends these emails inline exactly as before (the fast-fail fallback), so a partial deploy is safe.
 - **Step 13 — Cloudflare rate-limit rule on `/api/admissions/*`** — never applied. Dashboard config; needs the DNS record proxied (orange cloud) first.
 - **Step 8 — staff admin login**: at least one superuser exists (real campaigns have been sent from admin), but whether it was created via the step-8 job or ad hoc isn't recorded here.
 - **`admissions.can_send_bulk_email` / `admissions.can_view_health_info`** grants — still ungranted to any Group by design; a deliberate decision for whoever owns go-live.
@@ -180,6 +181,20 @@ gcloud tasks queues create admissions-bulk-email \
 
 `--max-dispatches-per-second=5` is the real throttle — it keeps this queue safely under Resend's rate limit without any hand-rolled pacing logic in the app itself. `--max-attempts=3` must match `CLOUD_TASKS_MAX_ATTEMPTS` in step 7's env vars — the batch-send handler uses that number to know whether a failed batch still has retries coming (leave the recipients "pending") or not (mark them "failed" for good, see `admissions/views.py:BulkEmailBatchSendView`). **Already created** on the real project as part of this build, in `$REGION`.
 
+### 5d. Create the Cloud Tasks queue for transactional email (one-off)
+
+The Inquiry/Application/draft-resume confirmation emails (b2, 2026-09-03) are also dispatched via Cloud Tasks now, so the submission's HTTP response returns without waiting on the SMTP round trip. A **separate** queue from 5c on purpose — a confirmation email must not sit behind a draining 2,000-recipient bulk campaign:
+
+```
+gcloud tasks queues create admissions-transactional-email \
+  --location=$REGION \
+  --max-dispatches-per-second=2 \
+  --max-concurrent-dispatches=5 \
+  --max-attempts=5
+```
+
+Lower dispatch rate (transactional volume is a trickle; 2/s here + 5/s on the bulk queue stays comfortably under Resend's 10 req/s), more retries (each confirmation matters). `--max-attempts=5` must match `CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS` in step 7's env vars (`admissions/views.py:TransactionalEmailSendView` uses it the same way `BulkEmailBatchSendView` uses `CLOUD_TASKS_MAX_ATTEMPTS`). The internal endpoint reuses `BULK_EMAIL_INTERNAL_SECRET` — no new secret. If this queue doesn't exist, or `GCP_PROJECT_ID` is unset, the app **falls back to sending each email inline** (logged), so nothing breaks — it just reintroduces the latency this removes.
+
 ## 6. Verify a sending domain in Resend
 
 Emails will silently fail (or get rejected by Resend) until `tcsch.edu.gh` —
@@ -251,6 +266,8 @@ gcloud run deploy admissions \
   --set-env-vars="CLOUD_TASKS_LOCATION=$REGION" \
   --set-env-vars="CLOUD_TASKS_QUEUE=admissions-bulk-email" \
   --set-env-vars="CLOUD_TASKS_MAX_ATTEMPTS=3" \
+  --set-env-vars="CLOUD_TASKS_TRANSACTIONAL_QUEUE=admissions-transactional-email" \
+  --set-env-vars="CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS=5" \
   --set-secrets="SECRET_KEY=admissions-secret-key:latest" \
   --set-secrets="DATABASE_URL=admissions-database-url:latest" \
   --set-secrets="SUPABASE_SERVICE_ROLE_KEY=admissions-supabase-key:latest" \

@@ -15,7 +15,7 @@ from . import bulk_email, emails, storage
 from .models import (
     Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmailCampaign,
     EmailCampaignRecipient, EmergencyContact, Family, Guardian, HealthInfo, Lead, Note, Offer,
-    ReferenceCounter, Student,
+    ReferenceCounter, Student, TransactionalEmail,
 )
 
 logger = logging.getLogger(__name__)
@@ -735,3 +735,62 @@ class EmailCampaignAdmin(ModelAdmin):
                     request,
                     f'"{campaign.name}" retry queued: {retried_count} recipient(s) across {task_count} batch(es).',
                 )
+
+
+@admin.register(TransactionalEmail)
+class TransactionalEmailAdmin(ModelAdmin):
+    """b2 — the async delivery log for Inquiry / Application / draft-resume
+    confirmation emails. View-only (rows are created by the submission path,
+    updated by TransactionalEmailSendView) except for the resend_failed
+    action."""
+    list_display = ("kind", "to_email", "status", "attempts", "created_at", "sent_at")
+    list_filter = ("status", "kind", "created_at")
+    search_fields = ("to_email", "subject")
+    readonly_fields = (
+        "kind", "to_email", "subject", "body", "attachments", "status",
+        "attempts", "last_error", "application", "created_at", "sent_at",
+    )
+    actions = ["resend_failed"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="Resend selected failed emails")
+    def resend_failed(self, request, queryset):
+        from . import emails
+
+        ids = list(queryset.filter(status="failed").values_list("id", flat=True))
+        if not ids:
+            self.message_user(
+                request, "No failed emails in the selection.", level=messages.WARNING,
+            )
+            return
+
+        TransactionalEmail.objects.filter(id__in=ids).update(
+            status="pending", last_error="",
+        )
+        try:
+            emails.enqueue_transactional_ids(ids)
+        except Exception:
+            logger.exception("resend_failed: enqueue failed, sending inline")
+            emails.send_transactional_rows(
+                TransactionalEmail.objects.filter(id__in=ids, status="pending"),
+                is_last_attempt=True,
+            )
+            still_failed = TransactionalEmail.objects.filter(id__in=ids, status="failed").count()
+            sent = len(ids) - still_failed
+            self.message_user(
+                request,
+                f"Queue unavailable — sent {sent} inline"
+                + (f", {still_failed} still failing." if still_failed else "."),
+                level=messages.WARNING if still_failed else messages.SUCCESS,
+            )
+            return
+
+        self.message_user(request, f"Re-queued {len(ids)} email(s) for delivery.")
