@@ -264,7 +264,7 @@ def send_pdf_gate_email(lead):
             subject="Your TCS Admissions Overview & Fees",
             message=(
                 f"Dear {lead.first_name or 'parent'},\n\n"
-                "Thank you for your interest in The Charterhouse School. Our "
+                "Thank you for your interest in Treasures Christian School. Our "
                 "Admissions Overview & Fees document is attached.\n\n"
                 "If you'd like to take the next step, you can start an enquiry at "
                 f"{settings.FRONTEND_BASE_URL}/inquiry\n\n"
