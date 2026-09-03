@@ -336,3 +336,51 @@ class UnsubscribeTests(TestCase):
         )
         rows = bulk_email.compute_recipient_rows(campaign)
         self.assertEqual(rows, [])
+
+
+class InquiryEmailAttachmentTests(_PublicEndpointBase):
+    """a7 — the Inquiry parent-confirmation email carries the Admissions
+    Overview & Fees PDF (settings.INQUIRY_EMAIL_ATTACHMENTS), resolved via the
+    same generic ADMISSIONS_ATTACHMENTS_DIR lookup as the PDF-gate download."""
+
+    INQUIRY_URL = "/api/admissions/inquiries/"
+
+    def _payload(self):
+        return {
+            "referral_source": "website",
+            "guardians": [{
+                "surname": "Mensah", "first_name": "Ama", "relationship": "mother",
+                "religion": "Christian", "address": "12 Cantonments Rd", "town_city": "Accra",
+                "phone": "+233201234567", "email": "ama@example-domain.gh",
+            }],
+            "students": [{
+                "full_name": "Kofi Mensah", "date_of_birth": "2016-04-02",
+                "current_school": "Little Steps", "current_grade": "Grade 3",
+                "year_group_applied_for": "Grade 4", "academic_year": "2026/2027",
+                "month_of_enrollment": "September",
+            }],
+        }
+
+    def test_confirmation_email_carries_the_pdf(self):
+        resp = self.client.post(self.INQUIRY_URL, self._payload(), format="json")
+        self.assertEqual(resp.status_code, 201)
+
+        to_parent = [m for m in mail.outbox if m.to == ["ama@example-domain.gh"]]
+        self.assertEqual(len(to_parent), 1)
+        names = [a[0] for a in to_parent[0].attachments]
+        self.assertEqual(names, ["admissions-overview-and-fees.pdf"])
+        # real PDF bytes, resolved from ADMISSIONS_ATTACHMENTS_DIR
+        self.assertTrue(to_parent[0].attachments[0][1].startswith(b"%PDF-"))
+
+        # Staff alert is a separate email and is NOT bloated with the attachment.
+        staff = [m for m in mail.outbox if m.to != ["ama@example-domain.gh"]]
+        self.assertEqual(len(staff), 1)
+        self.assertEqual(staff[0].attachments, [])
+
+    def test_missing_attachment_file_does_not_block_the_inquiry(self):
+        with tempfile.TemporaryDirectory() as d:
+            with override_settings(ADMISSIONS_ATTACHMENTS_DIR=d):
+                resp = self.client.post(self.INQUIRY_URL, self._payload(), format="json")
+        self.assertEqual(resp.status_code, 201)
+        to_parent = [m for m in mail.outbox if m.to == ["ama@example-domain.gh"]][0]
+        self.assertEqual(to_parent.attachments, [])

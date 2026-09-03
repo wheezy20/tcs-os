@@ -700,7 +700,9 @@
 
         <div class="field">
           <label for="student_nationality">Nationality <span class="required">*</span></label>
-          <select id="student_nationality" required></select>
+          <input type="text" id="student_nationality" list="nationality_list" autocomplete="off"
+                 placeholder="Start typing a country…" required />
+          <datalist id="nationality_list"></datalist>
           <div class="field-error" data-error-for="student.nationality"></div>
         </div>
 
@@ -1089,18 +1091,19 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
   document.getElementById("student_current_grade").innerHTML = gradeOptionsHtml(CURRENT_GRADE_OPTIONS);
   targetGradeSelect.innerHTML = gradeOptionsHtml(TARGET_GRADE_OPTIONS);
 
-  // ISO 3166-1 country names (249 entries: countries plus dependent/special
-  // territories), Ghana pinned first since the large majority of applicants
-  // are Ghanaian, the rest alphabetical. Source: lukes/ISO-3166-Countries-
-  // with-Regional-Codes on GitHub (built from ISO 3166-1 + Wikipedia), fetched
-  // directly rather than hand-typed to avoid a transcription error somewhere
-  // in 249 entries. A handful of ISO's official long-form names were swapped
-  // for their common name (e.g. "Korea, Republic of" -> "South Korea",
-  // "Viet Nam" -> "Vietnam") since this is a parent-facing field, not a
-  // technical one. A few entries (Antarctica, uninhabited territories) aren't
-  // really "nationalities" in the everyday sense, but trimming the list
-  // further would mean hand-picking a cutoff with no objective line — kept
-  // it complete otherwise.
+  // Country names derived from ISO 3166-1 (source: lukes/ISO-3166-Countries-
+  // with-Regional-Codes on GitHub, fetched rather than hand-typed to avoid a
+  // transcription error), Ghana pinned first since the large majority of
+  // applicants are Ghanaian, the rest alphabetical. A handful of ISO's
+  // official long-form names were swapped for their common name (e.g.
+  // "Korea, Republic of" -> "South Korea", "Viet Nam" -> "Vietnam") since
+  // this is a parent-facing field. Eight ISO entries with no permanent
+  // civilian population — and so no nationality anyone actually holds —
+  // were removed: Antarctica, Bouvet Island, British Indian Ocean Territory,
+  // French Southern Territories, Heard Island and McDonald Islands,
+  // Pitcairn, South Georgia and the South Sandwich Islands, and United
+  // States Minor Outlying Islands. Everything with a resident population is
+  // kept. 241 entries.
   const NATIONALITY_OPTIONS = [
     "Ghana",
     "Afghanistan",
@@ -1110,7 +1113,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Andorra",
     "Angola",
     "Anguilla",
-    "Antarctica",
     "Antigua and Barbuda",
     "Argentina",
     "Armenia",
@@ -1132,9 +1134,7 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Bonaire, Sint Eustatius and Saba",
     "Bosnia and Herzegovina",
     "Botswana",
-    "Bouvet Island",
     "Brazil",
-    "British Indian Ocean Territory",
     "Brunei",
     "Bulgaria",
     "Burkina Faso",
@@ -1181,7 +1181,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "France",
     "French Guiana",
     "French Polynesia",
-    "French Southern Territories",
     "Gabon",
     "Gambia",
     "Georgia",
@@ -1198,7 +1197,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Guinea-Bissau",
     "Guyana",
     "Haiti",
-    "Heard Island and McDonald Islands",
     "Holy See",
     "Honduras",
     "Hong Kong",
@@ -1276,7 +1274,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Paraguay",
     "Peru",
     "Philippines",
-    "Pitcairn",
     "Poland",
     "Portugal",
     "Puerto Rico",
@@ -1307,7 +1304,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Solomon Islands",
     "Somalia",
     "South Africa",
-    "South Georgia and the South Sandwich Islands",
     "South Korea",
     "South Sudan",
     "Spain",
@@ -1337,7 +1333,6 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "United Arab Emirates",
     "United Kingdom",
     "United States",
-    "United States Minor Outlying Islands",
     "Uruguay",
     "Uzbekistan",
     "Vanuatu",
@@ -1353,13 +1348,53 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     "Åland Islands",
   ];
 
-  function nationalityOptionsHtml() {
-    return (
-      '<option value="" disabled selected>Select one</option>' +
-      NATIONALITY_OPTIONS.map((n) => `<option value="${n}">${n}</option>`).join("")
-    );
+  // Typeahead via a native <datalist> — no library, the browser filters as
+  // the parent types. The <input> value is free text, so it's validated
+  // against the list on blur and again at submit (case-insensitive, with a
+  // case fix-up so "ghana" lands as "Ghana"). Server-side stays a lenient
+  // CharField, same "frontend check is convenience, not the guarantee"
+  // stance as phone/DOB.
+  const nationalityInput = document.getElementById("student_nationality");
+  document.getElementById("nationality_list").innerHTML =
+    NATIONALITY_OPTIONS.map((n) => `<option value="${n}"></option>`).join("");
+
+  const NATIONALITY_BY_LOWER = new Map(NATIONALITY_OPTIONS.map((n) => [n.toLowerCase(), n]));
+
+  function nationalityError() {
+    return document.querySelector('[data-error-for="student.nationality"]');
   }
-  document.getElementById("student_nationality").innerHTML = nationalityOptionsHtml();
+  // Returns the canonical country name if the field holds a valid one (also
+  // normalising its case in place), "" if empty, or null if it's an
+  // unrecognised value.
+  function normaliseNationality() {
+    const raw = nationalityInput.value.trim();
+    if (!raw) return "";
+    const match = NATIONALITY_BY_LOWER.get(raw.toLowerCase());
+    if (match) {
+      if (nationalityInput.value !== match) nationalityInput.value = match;
+      return match;
+    }
+    return null;
+  }
+  function validateNationality(showEmptyError) {
+    const result = normaliseNationality();
+    const errorEl = nationalityError();
+    const bad = result === null || (showEmptyError && result === "");
+    if (errorEl) {
+      errorEl.textContent = bad
+        ? (result === null
+            ? "Choose a country from the list."
+            : "Nationality is required.")
+        : "";
+      errorEl.classList.toggle("visible", bad);
+    }
+    return !bad;
+  }
+  nationalityInput.addEventListener("blur", () => validateNationality(false));
+  nationalityInput.addEventListener("input", () => {
+    const errorEl = nationalityError();
+    if (errorEl && errorEl.classList.contains("visible")) validateNationality(false);
+  });
 
   // ================= free navigation between sections =================
   // No forced order and no mid-form validation blocking — leaving a section
@@ -2122,6 +2157,11 @@ Walk in to the bank, OR dial *170# → Option 1 (Transfer money) → Option 6 (B
     }
     if (incompleteSteps.length > 0) {
       showIncompleteSummary(incompleteSteps);
+      return;
+    }
+    if (!validateNationality(true)) {
+      showMessage("Please choose a nationality from the list.", "error");
+      renderStep(stepForErrorKey("student"));
       return;
     }
     if (pendingUploads > 0) {

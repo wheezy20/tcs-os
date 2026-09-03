@@ -369,13 +369,19 @@ applied to text, not button labels.
 `admissions/emails.py`'s `_send()` switched from `send_mail()` to
 `EmailMessage` specifically for attachment support. Generic on purpose, per
 the explicit ask — `ADMISSIONS_ATTACHMENTS_DIR` (a directory) plus a
-per-email-type filename list (`INQUIRY_EMAIL_ATTACHMENTS`, currently empty)
-rather than hardcoding any one document. Wired into the Inquiry
-parent-confirmation email as the flagship use; a missing configured file is
-logged and skipped, never blocks the send (same "never let email plumbing
-block the actual submission" rule as the rest of this module). Extending
-attachments to Application/Offer emails later is a one-line change — pass
-another settings list into that email's `_send()` call.
+per-email-type filename list rather than hardcoding any one document. A
+missing configured file is logged and skipped, never blocks the send (same
+"never let email plumbing block the actual submission" rule as the rest of
+this module). Two lists are wired up now:
+
+- `INQUIRY_EMAIL_ATTACHMENTS` — default `["admissions-overview-and-fees.pdf"]`
+  (2026-09-03), so the Inquiry **parent** confirmation carries the Admissions
+  Overview & Fees PDF. The staff-alert half of the same submission event does
+  **not** get the attachment — only `_send()` calls that pass the list do.
+- `PDF_GATE_ATTACHMENTS` — same default file, for the PDF-gate download email
+  (Phase 6 Lead capture).
+
+Both resolve the same shipped-in-the-image file (`backend/admissions/attachments/admissions-overview-and-fees.pdf`, ~4.9 MB). Extending attachments to Application/Offer emails later is still a one-line change — pass another settings list into that email's `_send()` call.
 
 ## Phase 4.5 — deployment prep
 
@@ -594,9 +600,11 @@ Tokens are single-use — every submit handler calls `turnstile.reset()` after a
 
 ### Nationality — country dropdown
 
-`application.html`'s `NATIONALITY_OPTIONS` (Student form) is the ISO 3166-1 country list (249 entries: countries plus dependent/special territories), Ghana pinned first, fetched from `lukes/ISO-3166-Countries-with-Regional-Codes` on GitHub rather than hand-typed — 249 entries is exactly the kind of list a human transcribes one entry wrong in. A handful of ISO's official long-form names were swapped for their common name for this parent-facing field (`"Korea, Republic of"` → `"South Korea"`, `"Viet Nam"` → `"Vietnam"`, `"United States of America"` → `"United States"`, etc. — see the code comment for the full list). No model/serializer change — `Student.nationality` was always a free `CharField`, so this is purely a frontend input constraint.
+`application.html`'s `NATIONALITY_OPTIONS` (Student form) is the ISO 3166-1 country list, Ghana pinned first, fetched from `lukes/ISO-3166-Countries-with-Regional-Codes` on GitHub rather than hand-typed. A handful of ISO's official long-form names were swapped for their common name for this parent-facing field (`"Korea, Republic of"` → `"South Korea"`, `"Viet Nam"` → `"Vietnam"`, `"United States of America"` → `"United States"`, etc. — see the code comment for the full list). No model/serializer change — `Student.nationality` was always a free `CharField`, so this is purely a frontend input constraint.
 
-One real compatibility issue found in production data before shipping: the one existing value ever submitted (`"Ghanaian"`, a demonym, from before this dropdown existed) doesn't match any `<option>`, which would silently leave the field blank when an in-progress draft holding that value is resumed. Fixed with a narrow `LEGACY_NATIONALITY_FIXUPS` map in `populateForm()` (currently just `{"Ghanaian": "Ghana"}`, the one value actually seen) — not a general demonym translator, just a compatibility shim for pre-dropdown drafts.
+**2026-09-03 — trimmed and given typeahead:** eight ISO entries with no permanent civilian population (so no nationality anyone actually holds) were removed — Antarctica, Bouvet Island, British Indian Ocean Territory, French Southern Territories, Heard Island and McDonald Islands, Pitcairn, South Georgia and the South Sandwich Islands, United States Minor Outlying Islands — leaving **241 entries**. Everything with a resident population (Guam, Puerto Rico, Åland, Hong Kong, Taiwan, Palestine, the small Pacific/Atlantic island territories, …) is kept — "no permanent population" is the one objective line, anything past it is an arbitrary population-threshold judgment. The `<select>` became a native `<input list="nationality_list">` + `<datalist>` — the browser filters as the parent types, no JS library. The input value is free text, so `validateNationality()` checks it against the list on blur and again at submit (case-insensitive, normalising `"ghana"` → `"Ghana"` in place); an unrecognised value shows an inline error and blocks submit with a jump to the Student section. Server-side stays the lenient `CharField` — same "the frontend check is a convenience, not the guarantee" stance as phone/DOB. Applies to both form copies (`backend/templates/public/apply.html` deployed, `frontend/application.html` preview). Inquiry doesn't collect nationality, so nothing changed there.
+
+One real compatibility issue found in production data before shipping: the one existing value ever submitted (`"Ghanaian"`, a demonym, from before this field was constrained) doesn't match any option, which would silently leave the field blank when an in-progress draft holding that value is resumed. Fixed with a narrow `LEGACY_NATIONALITY_FIXUPS` map in `populateForm()` (currently just `{"Ghanaian": "Ghana"}`, the one value actually seen) — not a general demonym translator, just a compatibility shim for pre-constraint drafts.
 
 ### Academic year — school-year format
 

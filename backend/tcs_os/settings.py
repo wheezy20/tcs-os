@@ -303,13 +303,15 @@ OFFER_EXPIRY_DAYS = env.int("OFFER_EXPIRY_DAYS", default=14)
 FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:8000")
 
 # Phase 4 — email attachments (prospectus/brochure, etc.). Generic by design:
-# a directory of files plus a per-email-type filename list, both empty/unset
-# by default so nothing breaks before real files exist. Drop files into this
-# directory and list their names in INQUIRY_EMAIL_ATTACHMENTS (comma-separated
-# env var) to start attaching them — no code change needed. See
-# admissions/emails.py.
+# a directory of files plus a per-email-type filename list. Names are
+# resolved against ADMISSIONS_ATTACHMENTS_DIR; a missing file is logged and
+# skipped, never blocking the send (see admissions/emails.py). Override
+# either via a comma-separated env var — no code change needed.
 ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "admissions" / "attachments"))
-INQUIRY_EMAIL_ATTACHMENTS = env.list("INQUIRY_EMAIL_ATTACHMENTS", default=[])
+# The "Admissions Overview & Fees" PDF ships in the image (same file the
+# PDF-gate download uses — see PDF_GATE_ATTACHMENTS below), so the inquiry
+# parent-confirmation email carries it by default.
+INQUIRY_EMAIL_ATTACHMENTS = env.list("INQUIRY_EMAIL_ATTACHMENTS", default=["admissions-overview-and-fees.pdf"])
 
 # Files attached to the PDF-gate download email (see PdfGateCreateView /
 # admissions.emails.send_pdf_gate_email). Same mechanism as
