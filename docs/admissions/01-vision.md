@@ -75,7 +75,9 @@ AuditLog
 AlumniRecord → AdvancementActivity
 ```
 
-Only a small subset of this (see `02-stack-and-schema.md`) is built in Phase 1. The rest exists so later phases have somewhere to attach without a schema rewrite.
+Only a small subset of this (see `02-stack-and-schema.md`) is built. The rest exists so later phases have somewhere to attach without a schema rewrite.
+
+On the `Lead` line specifically: Phase 6 (2026-09-01) shipped a deliberately **flat** `Lead` model — `name`, `email`/`phone`, `grade_interest`, a `source` enum (quick-interest widget / PDF gate), marketing consent, unsubscribe token — with no separate `Enquiry`, `Activity`, `Campaign`, or `LeadSource` entities. `EmailCampaign` (Phase 6) can target a Lead audience, and `Lead.source` gives a coarse capture-point split, but full funnel/campaign/UTM attribution as sketched above is not built and is not currently scheduled. See `03-build-order.md`.
 
 ## UX principles (carry forward into every phase)
 

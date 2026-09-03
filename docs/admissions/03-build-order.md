@@ -2,7 +2,7 @@
 
 **Status:** active work plan. Update this file as phases complete, scope shifts, or new phases get defined. Mark a phase `DONE` (with date) instead of deleting it, so the history stays visible.
 
-**Current phase: Phase 6 — bulk/marketing email, in progress**
+**Current phase: none active — Phases 1–6 DONE. Next up is either a scoped Phase 6.1 (bounce/open tracking, topic-level opt-outs) or Phase 7+ from `01-vision.md`. Several operational go-live items remain — see `docs/deployment.md` and the Phase 6 entry below.**
 
 ---
 
@@ -56,7 +56,7 @@ Deferred out of Phase 2 mid-session (this used to be a standalone note living di
 - Three numbering schemes: Inquiry reference (`INQ-YYYY-NNNN`), Application reference (`APP-YYYY-NNNN`), permanent Student ID (`YYPPNNNN`) — full format/assignment-trigger detail in `02-stack-and-schema.md`
 - `ReferenceCounter` model, incremented under `select_for_update()` so concurrent submissions can't be handed the same number — verified against real concurrent OS processes hitting the real Supabase Postgres backend, no duplicates or gaps
 - Student ID classification has no code for SHS (Grade 10-12) since TCS doesn't offer it yet — a student enrolled at that level gets no ID assigned (never a guessed code) and a logged warning, so it surfaces as a visibly-missing field rather than silently wrong data
-- `reset_admissions_data` management command built (truncates all admissions tables, resets ID sequences, requires typing "yes" to confirm) — **built but deliberately not run, and not yet committed**; exists for wiping Phase 1/2 test data immediately before go-live
+- `reset_admissions_data` management command built (truncates all admissions tables, resets ID sequences, requires typing "yes" to confirm) — committed (`acb4589`), **built but deliberately never run**; exists for wiping test data immediately before go-live
 
 **Provisional:** none of these three formats have been confirmed against any pre-existing TCS paper/legacy student-numbering convention. Confirm before treating this as final — see `02-stack-and-schema.md`.
 
@@ -100,7 +100,7 @@ Closes out the "still not done" item flagged back in Phase 1 (Cloudflare, real s
 
 **Not done here, deliberately out of scope:** Turnstile on the forms, the Cloudflare rate-limit rule on `/api/admissions/*` — both flagged as open since Phase 1, still open. **Resolved (2026-08-26):** see the Phase 5 follow-up entry below.
 
-## Phase 5 — Expanded Application form — in progress (2026-08-26)
+## Phase 5 — Expanded Application form — DONE (2026-08-26, plus three same-week follow-ups: free navigation `31f5093`, upload constraints `08c9dc9`, Turnstile + loose ends `63e00d2`)
 
 Brings the Application form up to the school's real paper/Google Forms process — full plan reviewed and approved before any code was written (schema, draft/resume design, and the Campus×Capacity question all put to the user explicitly; see `04-build-log.md` for the resolutions).
 
@@ -130,7 +130,7 @@ Two later sessions on top of the base Phase 5 build, same phase — not new func
 - Root-caused (not guessed) a reported "Submitting… forever" bug: synchronous, per-email SMTP connection setup to Resend (~2.5-3s each, confirmed by direct measurement) was the dominant cost, not a frontend bug — fixed by reusing one connection for both emails per submission event. Separately root-caused a "Save & finish later" failure via production logs: the sidebar/save-later button weren't disabled after a successful submit, so further clicks PATCHed an already-submitted draft and got a real (correctly-behaving) 400 surfaced as a confusing generic error — fixed by locking the whole form on success, with a defensive fallback if that's ever bypassed (e.g. a stale second tab).
 - **Flagged, not built:** true fire-and-forget email dispatch (e.g. via Cloud Tasks) so a submission's HTTP response doesn't wait on Resend at all — would remove the remaining latency entirely, but is new GCP infrastructure with its own cost/complexity, not a code-only fix. Left for the user to decide rather than added unasked.
 
-## Phase 6 — Bulk/marketing email — in progress (2026-08-27)
+## Phase 6 — Bulk/marketing email — DONE (base 2026-08-27; production incident + retry mechanism 2026-08-28; deferred "enquiries before application" scope 2026-09-01)
 
 Full plan (schema, unsubscribe flow, sending-domain and background-job recommendations) reviewed and approved before any code was written — see `04-build-log.md` for the resolutions (plain text over HTML, pure opt-out recipient base, the `google-cloud-tasks` dependency and shared-secret internal auth, a separate bulk-sending subdomain).
 
@@ -144,13 +144,18 @@ Full plan (schema, unsubscribe flow, sending-domain and background-job recommend
 - `admissions.can_send_bulk_email` permission, not auto-granted — same deliberate-grant treatment `can_view_health_info` got, given the blast radius of sending the wrong campaign to everyone by mistake. Drafting/Preview need only normal admin access.
 - Admin: Preview (renders against a real matching recipient, or placeholder text if none match yet) and Send actions, a read-only recipient-audit inline.
 - **Two real bugs found and fixed while testing, not before:** a Cloud Tasks enqueue failure crashed with an unhandled 500 and left orphaned "queued" campaign/recipient rows with nothing actually dispatched — fixed by making the enqueue step atomic with a clean rollback to Draft on failure. Separately, Resend's batch API (fronted by Cloudflare) outright blocked the request with a 403 because `urllib`'s default User-Agent looks bot-like — fixed by setting an explicit one. Full detail in `04-build-log.md`.
-- A dedicated bulk-sending subdomain (`updates.tcsch.edu.gh`) to isolate reputation from transactional email — DNS/Resend verification is real setup work still needed from the user (`docs/deployment.md` step 6b), not done as part of this build.
+- A dedicated bulk-sending subdomain (`updates.tcsch.edu.gh`) to isolate reputation from transactional email — DNS/Resend verification was completed by the user; **confirmed `"status": "verified"` via a real Resend `GET /domains` call on 2026-08-28** (see `04-build-log.md`). `docs/deployment.md` step 6b is the how-to for a from-scratch setup; it does not still need doing here.
 
-**Not done here, deliberately out of scope (flagged during planning, not decided silently):** bounce/open tracking (needs Resend webhooks and, for opens, HTML email — this system is plain text throughout); per-topic/multiple mailing lists (a single unsubscribe flag covers "all bulk email," not granular topics); the older Phase 6 scope items below (lead source tracking, enquiries-before-application) — not touched by this build, still open.
+**Deferred out of the Phase 6 build, deliberately (flagged during planning, not decided silently) — candidates for a scoped Phase 6.1:**
+- Bounce/open tracking — needs Resend webhooks and, for opens, HTML email (this system is plain text throughout). `EmailCampaignRecipient.resend_message_id` is already stored for future correlation.
+- Per-topic / multiple mailing lists — a single `bulk_email_unsubscribed_at` flag covers "all bulk email," not granular topics.
 
 **Original Phase 6 scope:**
-- ~~Enquiries before application (lead capture even without a full application)~~ — done 2026-09-01: `Lead` model + two public endpoints (`/api/admissions/quick-interest/`, `/api/admissions/pdf-gate/admissions-overview/`), see `04-build-log.md`.
-- Lead source tracking — partially: `Lead.source` distinguishes the two capture points, and bulk campaigns can target `filter_lead_source`. Full campaign/UTM attribution across the funnel is still open.
+- ~~Enquiries before application (lead capture even without a full application)~~ — **DONE 2026-09-01**: flat `Lead` model + two public endpoints (`/api/admissions/quick-interest/`, `/api/admissions/pdf-gate/admissions-overview/`) + a Lead audience for bulk campaigns. Deployed to production 2026-09-02 (revision `admissions-00018`). See `04-build-log.md` and `02-stack-and-schema.md`.
+- Lead source tracking — **partial**: `Lead.source` distinguishes the two capture points and bulk campaigns can target `filter_lead_source`. Full campaign/UTM attribution across the funnel (the `Activity` / `LeadSource` shape sketched in `01-vision.md`) is still open — deliberately, pending a decision on whether it's wanted.
+
+## Phase 6.1 (not started, scoped) — bulk-email follow-ons
+Bounce/open tracking (Resend webhooks; opens also need HTML email); per-topic / multiple mailing lists (replacing the single all-or-nothing unsubscribe flag); full lead-source / campaign attribution across the funnel. All deferred deliberately from Phase 6 — see that entry. Pick up if/when actually needed.
 
 ## Phase 7+ — Everything else in 01-vision.md
 Re-enrolment, interviews/assessments as structured records, review rubrics, multi-stage review, alumni/advancement, AI analytics. Multi-campus removed from this list — Phase 5 built it. Revisit `01-vision.md` when you get here, don't pre-build models for these now.

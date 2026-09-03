@@ -1,8 +1,29 @@
 # Deployment — Google Cloud Run
 
-**Status:** step-by-step guide for the first real deploy of the `backend/` Django project (all modules — currently just `admissions`) to Cloud Run under `admissions.tcsch.edu.gh`. Written 2026-08-19, alongside the `/inquiry` `/apply` `/offer` routing change that lets Django serve the public forms itself instead of a separate static host — see `docs/admissions/04-build-log.md` for that decision. Written as commands for you to run yourself; nothing here has been executed against a real GCP project.
+**Status:** originally the step-by-step guide for the *first* real deploy of the `backend/` Django project (all modules — currently just `admissions`) to Cloud Run under `admissions.tcsch.edu.gh`, written 2026-08-19. **That first deploy has since happened, and the service has been redeployed many times** (latest revision `admissions-00019-qm7`, 2026-09-03). This doc is now two things at once: (1) an accurate record of the GCP-side setup that exists, and (2) a from-scratch runbook still valid for standing the whole thing up again elsewhere. Treat the per-step "not run" / "written for you" phrasing as historical unless a step is called out as outstanding in **Current deployment state** below.
 
 Read `shared-stack.md` first for the overall architecture this assumes (Supabase Postgres, Secret Manager, Cloudflare in front).
+
+---
+
+## Current deployment state (last reconciled 2026-09-03)
+
+**Live and working** (verified against `https://admissions.tcsch.edu.gh` and `gcloud`):
+
+- Service `admissions` in `europe-west1`, project `tcs-os`, serving revision `admissions-00019-qm7`. Custom domain resolves and serves over HTTPS — steps 1–4, 7, 11, 12 are effectively done (the CNAME to `ghs.googlehosted.com` is in place and routing).
+- Secret Manager holds `admissions-secret-key`, `admissions-database-url`, `admissions-supabase-key`, `admissions-resend-key`, `admissions-turnstile-secret`, `admissions-bulk-email-secret`. IAM bound to the `admissions-runner@tcs-os.iam.gserviceaccount.com` runtime SA (step 3).
+- `admissions-migrate` Cloud Run Job exists and has been run through migration `0014` (step 5). `admissions-configure-storage` job pattern from step 5b has been run against the real bucket.
+- `admissions-bulk-email` Cloud Tasks queue exists (`--max-dispatches-per-second=5`, `--max-attempts=3`) — step 5c done.
+- Resend: **both** sending domains verified — `tcsch.edu.gh` (step 6) and `updates.tcsch.edu.gh` (step 6b), the latter confirmed `"status": "verified"` via a real `GET /domains` call on 2026-08-28. A real Phase 6 campaign has been sent in production.
+- All step-7 env vars are set on the live service, including Phase 6's six (`GCP_PROJECT_ID` etc.) and the 2026-09-02 CORS pair (`CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGIN_REGEXES`).
+
+**Genuinely still outstanding:**
+
+- **Step 13 — Cloudflare rate-limit rule on `/api/admissions/*`** — never applied. Dashboard config; needs the DNS record proxied (orange cloud) first.
+- **Turnstile widget allowed-domains** — the production widget is scoped to `admissions.tcsch.edu.gh` only. The marketing site's Lead-capture widgets on `tcsch.edu.gh` (and any Vercel preview host) need adding to the *same widget's* allowed-domains list in the Cloudflare dashboard. Separate from CORS (which is done). Not in the numbered steps below because it post-dates them — Phase 6's Lead capture (2026-09-01).
+- **Step 8 — staff admin login**: at least one superuser exists (real campaigns have been sent from admin), but whether it was created via the step-8 job or ad hoc isn't recorded here.
+- **`admissions.can_send_bulk_email` / `admissions.can_view_health_info`** grants — still ungranted to any Group by design; a deliberate decision for whoever owns go-live.
+- **Step 9 / step 10** verification checklists — the `*.run.app` direct-hit check and the production-origin Supabase upload check — worth running once as documented, not known to have been done formally.
 
 ---
 
@@ -188,7 +209,9 @@ not forgotten once the service is live and staff are expecting real email.
    can take up to 24 hours; Resend re-checks and flips each record's status
    (missing → verified) as it resolves.
 
-### 6b. Verify the bulk-email sending subdomain (Phase 6) — you'll need to do this
+### 6b. Verify the bulk-email sending subdomain (Phase 6) — DONE 2026-08-28
+
+**Status:** `updates.tcsch.edu.gh` was added and verified in Resend by the user; confirmed `"status": "verified"` via a real `GET /domains` API call on 2026-08-28 (see `docs/admissions/04-build-log.md`). The steps below are retained as the how-to for a from-scratch rebuild — they do **not** still need doing.
 
 Unlike step 6 above, this one **is** the "isolate sending reputation" case that step 6 mentions in passing — bulk/marketing mail is far likelier to generate spam complaints or a high bounce rate than a one-off transactional confirmation, and a shared domain would let that damage the deliverability of the offer/confirmation emails that actually matter. `BULK_EMAIL_FROM_EMAIL` defaults to `updates@updates.tcsch.edu.gh` — a separate subdomain from `tcsch.edu.gh`, not just a separate local part.
 
@@ -197,8 +220,6 @@ Unlike step 6 above, this one **is** the "isolate sending reputation" case that 
 3. Add those records in Cloudflare DNS, same as step 6 (TXT/MX, never proxied).
 4. Back in Resend, **Verify DNS Records**.
 5. Once verified, either leave `BULK_EMAIL_FROM_EMAIL` at its default (`updates@updates.tcsch.edu.gh`) or set it to whatever local part you'd rather send from on that subdomain — set via step 7's env vars.
-
-This is genuinely new DNS/Resend setup work on your end — nothing here has been done for you, unlike the GCP-side steps above.
 
 ## 7. Deploy the Cloud Run service
 
@@ -351,5 +372,6 @@ The free Cloudflare plan allows exactly **one** rate limiting rule per zone — 
 
 ## After this works
 
-- Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy` with the same flags) — plus step 5's migrate job if the new code has migrations, and step 5b's storage-config job if upload limits changed.
-- Before using Phase 6's bulk email for real: step 6b (bulk-email subdomain verification) is real setup work still needed on your end, and `admissions.can_send_bulk_email` needs to be granted to whichever staff member(s) should actually be able to trigger a send — not automatic, same deliberate-grant pattern as `can_view_health_info`.
+- Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy`) — plus step 5's migrate job if the new code has migrations, and step 5b's storage-config job if upload limits changed. Note: pass env-var flags **only** for vars you intend to change, and prefer `--update-env-vars` over `--set-env-vars` so the deploy doesn't wipe the ~20 vars it omits (the 2026-09-02 CORS deploy used `--update-env-vars='^##^KEY=a,b##KEY2=...'`). Reusing this doc's full step-7 command verbatim would overwrite real values with its placeholders (`SUPABASE_URL=https://your-project.supabase.co`, `TURNSTILE_SITE_KEY=PASTE_...`).
+- Before using Phase 6's bulk email for real: `admissions.can_send_bulk_email` needs to be granted to whichever staff member(s) should actually be able to trigger a send — not automatic, same deliberate-grant pattern as `can_view_health_info`. (Sending-domain verification — step 6b — is already done.)
+- The Lead-capture widgets (Phase 6, 2026-09-01) on the marketing site need `tcsch.edu.gh` + any preview host added to the production Turnstile widget's allowed-domains list — see **Current deployment state** above.

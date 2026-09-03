@@ -625,11 +625,11 @@ Fixed with `lockFormAsSubmitted()`, called on a successful submit, which disable
 
 ### Schema
 
-`Guardian` gained `bulk_email_unsubscribe_token` (unique, generated eagerly at creation — same pattern as `Offer.token`) and `bulk_email_unsubscribed_at` (null = subscribed; opt-out by default, not an explicit list). Checked only by the bulk-send recipient query (`bulk_email.compute_recipients()`) — `emails.py` (every transactional send: confirmation, offer, draft-resume) has zero references to it, a deliberate hard separation rather than a runtime toggle someone could misconfigure.
+`Guardian` gained `bulk_email_unsubscribe_token` (unique, generated eagerly at creation — same pattern as `Offer.token`) and `bulk_email_unsubscribed_at` (null = subscribed; opt-out by default, not an explicit list). Checked only by the bulk-send recipient computation (`bulk_email.compute_recipient_rows()` and its Guardian/Lead pool helpers) — `emails.py` (every transactional send: confirmation, offer, draft-resume) has zero references to it, a deliberate hard separation rather than a runtime toggle someone could misconfigure. `Lead` (added 2026-09-01, see the "Lead capture" follow-up section below) carries the identically-named `bulk_email_unsubscribe_token`/`bulk_email_unsubscribed_at` fields so the same code path treats a Lead and a Guardian recipient interchangeably.
 
-`EmailCampaign`: `subject`/`body` (plain text, `{{placeholder}}`-substituted at send time — see below), optional `filter_stage`/`filter_academic_year`/`filter_campus` (blank = no filter on that dimension, AND semantics between set ones), `status` (draft/queued/sending/sent/failed), `created_by`, and denormalized `total_recipients`/`sent_count`/`failed_count` counters. `clean()` refuses to validate without `{{unsubscribe_link}}` literally present in the body — a hard guardrail, not just documentation, confirmed by testing that `full_clean()` actually rejects a body missing it.
+`EmailCampaign`: `subject`/`body` (plain text, `{{placeholder}}`-substituted at send time — see below), `audience` (`guardians` / `leads` / `both`, added 2026-09-01), optional `filter_stage`/`filter_academic_year`/`filter_campus` (Guardian audience only; blank = no filter on that dimension, AND semantics between set ones), optional `filter_lead_source` (Lead audience only), `status` (draft/queued/sending/sent/failed), `created_by`, and denormalized `total_recipients`/`sent_count`/`failed_count`/`skipped_count` counters. `clean()` refuses to validate without `{{unsubscribe_link}}` literally present in the body — a hard guardrail, not just documentation, confirmed by testing that `full_clean()` actually rejects a body missing it.
 
-`EmailCampaignRecipient`: one row per (campaign, guardian) — the audit trail. `email` is a snapshot at send time (a Guardian's address could change later); `status` (pending/sent/failed/skipped_unsubscribed); `resend_message_id` (from the batch API's own response, kept for a possible future bounce-webhook correlation even though bounce tracking itself isn't built); `error_message`. Recipients are computed **once**, when staff click Send — not recalculated afterward, so this stays an accurate historical record even if Guardian data changes later.
+`EmailCampaignRecipient`: one row per (campaign, recipient) — the audit trail. Exactly one of `guardian` / `lead` is set (both nullable FKs since 2026-09-01, enforced by a DB `CheckConstraint`; the old `unique_together = (campaign, guardian)` became two partial `UniqueConstraint`s, one per target type). `email` is a snapshot at send time (the address could change later); `status` (pending/sent/failed/skipped_unsubscribed/skipped_invalid); `resend_message_id` (from the batch API's own response, kept for a possible future bounce-webhook correlation even though bounce tracking itself isn't built); `error_message`. Recipients are computed **once**, when staff click Send — not recalculated afterward, so this stays an accurate historical record even if Guardian/Lead data changes later.
 
 New permission `admissions.can_send_bulk_email` (on `EmailCampaign`), not auto-granted — same deliberate-grant treatment `can_view_health_info` got. Drafting and Preview need only the normal model permissions Django creates automatically; only the Send action itself is gated (`EmailCampaignAdmin.get_actions()`, same pattern as `can_decide` hiding `generate_offer`/`reset_offer`).
 
@@ -637,7 +637,7 @@ New permission `admissions.can_send_bulk_email` (on `EmailCampaign`), not auto-g
 
 ### Template placeholders
 
-`bulk_email.render_template()` — a whitelisted `{{name}}` regex substitution, not Django's template engine, so a staff-authored subject/body can't execute arbitrary `{% %}` template logic (a mail-merge doesn't need that). Available: `{{guardian_first_name}}`, `{{guardian_full_name}}`, `{{student_names}}` (comma-joined across a family's children), `{{unsubscribe_link}}` (required). An unknown placeholder is left as literal text rather than silently blanked, so a typo is visible in Preview instead of vanishing.
+`bulk_email.render_template()` — a whitelisted `{{name}}` regex substitution, not Django's template engine, so a staff-authored subject/body can't execute arbitrary `{% %}` template logic (a mail-merge doesn't need that). Available: `{{recipient_first_name}}`, `{{recipient_full_name}}` (added 2026-09-01, resolve for a Guardian *or* a Lead recipient — prefer these), `{{guardian_first_name}}`, `{{guardian_full_name}}` (kept as back-compat aliases; for a Lead they resolve to the same first-token / full `name`), `{{student_names}}` (comma-joined across a family's children; falls back to "your child" for a Lead, which has none), `{{unsubscribe_link}}` (required). An unknown placeholder is left as literal text rather than silently blanked, so a typo is visible in Preview instead of vanishing.
 
 ### Sending mechanism — Resend's batch API, not SMTP
 
@@ -677,7 +677,44 @@ One view (`UnsubscribeView`), token-only access control (same trust model as `Of
 
 **A real bug found and fixed during testing:** the one-click `POST` failed with a real `403 CSRF verification failed` — `UnsubscribeView` is a plain Django `View`, not a DRF `APIView`, so it never got the automatic `csrf_exempt` wrapping DRF's `APIView.as_view()` applies (see the CSRF investigation elsewhere in this doc for why that automatic exemption exists at all). A mail provider's one-click POST has no browser session or CSRF cookie by design — RFC 8058 requires exactly that. Fixed with an explicit `@method_decorator(csrf_exempt, name="dispatch")`; safe here since unsubscribing is idempotent/low-stakes and the token itself is the real access control.
 
-Confirmed end-to-end with real tokens: `GET` renders the correct guardian name and the transactional-email carve-out message and sets `bulk_email_unsubscribed_at`; a repeated `GET` or `POST` doesn't reset the original timestamp; `POST` returns a real `200` with an empty body (correct RFC 8058 shape); a campaign's `compute_recipients()` correctly excludes both test guardians once unsubscribed.
+Confirmed end-to-end with real tokens: `GET` renders the correct guardian name and the transactional-email carve-out message and sets `bulk_email_unsubscribed_at`; a repeated `GET` or `POST` doesn't reset the original timestamp; `POST` returns a real `200` with an empty body (correct RFC 8058 shape); a campaign's recipient computation correctly excludes both test guardians once unsubscribed. (Since 2026-09-01 `UnsubscribeView` also resolves a token against `Lead` — see below.)
+
+## Phase 6 follow-up — Lead capture (enquiries before application) (2026-09-01)
+
+Built the long-deferred Phase 6 "enquiries before application" scope, to a plan the user approved point by point (field names, throttle rate, consent defaults, audience-targeting UX, token naming, CORS) before any code. Deployed to production 2026-09-02 (revision `admissions-00018`); a wrong-school-name string in the PDF-gate email was fixed the next day (`admissions-00019`). Full test coverage lives in `admissions/tests.py` — the project's first real test module (25 tests, run on in-memory SQLite since Supabase's pooler can't `CREATE DATABASE` for Django's default test runner: `DATABASE_URL=sqlite://:memory: python manage.py test admissions`).
+
+### `Lead` model
+
+Deliberately flat — no Family/Guardian/Student/Application, no stage, no workflow. It's a queryable safety net plus a bulk-email audience; staff who want to actually progress a prospect re-key them through the normal Inquiry form.
+
+| Field | Notes |
+|---|---|
+| `name` | single free-text field (no first/surname split — a `first_name` *property* returns the first token for `{{recipient_first_name}}`) |
+| `email` / `phone` | both `blank`; **at least one required**, enforced in the serializers (the only write paths), not the model |
+| `grade_interest` | free text, optional |
+| `source` | choices `quick_interest_widget` / `pdf_gate_admissions_overview` — **set server-side per endpoint, never read from the client** |
+| `consent_to_marketing` | `BooleanField(default=False)` — see the consent note below |
+| `bulk_email_unsubscribe_token` / `bulk_email_unsubscribed_at` | identical pattern and naming to `Guardian`, so `bulk_email.py` and `UnsubscribeView` treat the two interchangeably |
+| `created_at` | |
+
+Admin: a plain list (`name`, contact, `grade_interest`, `source`, `consent_to_marketing`, unsubscribed-at, `created_at`), filterable by source and consent. `has_add_permission` returns `False` — leads only ever arrive via the two endpoints.
+
+### Public endpoints
+
+Both `AllowAny` + `TurnstileProtectedCreateMixin` (same bot-protection gate as Inquiry/Application/Offer) + a new `LeadRateThrottle` (`lead_capture` scope, **60/hour** — higher than the default `anon` 20/hour because the marketing site shares office/NAT IPs; same precedent as `application_draft`). snake_case bodies, `201` + JSON on success, `400` + field errors on failure — the house pattern. CORS-reachable from the marketing site (see below).
+
+- **`POST /api/admissions/quick-interest/`** — `QuickInterestSerializer`. `name` + (`email` or `phone`; `phone` gets the same `+CCCXXXXXXXXX` regex as every other form) + optional `grade_interest` + optional `consent_to_marketing`. Fires a staff-notification email only; nothing is sent to the lead.
+- **`POST /api/admissions/pdf-gate/admissions-overview/`** — `PdfGateSerializer` (subclass; `email` is **required** here because the document is emailed to it). Emails the "Admissions Overview & Fees" PDF via the existing generic attachment mechanism — new `settings.PDF_GATE_ATTACHMENTS` (default `["admissions-overview-and-fees.pdf"]`, resolved in `ADMISSIONS_ATTACHMENTS_DIR`). The real 4.9 MB file was committed (`9505352`) and baked into the image; a missing file is still logged-and-skipped with the lead captured anyway, same as `INQUIRY_EMAIL_ATTACHMENTS`. Also fires a staff notification.
+
+**Consent safety net:** the `consent_to_marketing` serializer field is `required=False, default=False` on both endpoints — an omitted or blank value is always `False` regardless of what the form sends; only an explicit `true` (a genuinely ticked box) is honoured. The backend cannot distinguish a deliberate `true` from a pre-checked-by-default box, so the default is the guarantee — the marketing site must ship the checkbox unticked.
+
+### Bulk email — Lead audience
+
+`EmailCampaign.audience` (`guardians` default / `leads` / `both`, required) + `filter_lead_source`. `bulk_email.compute_recipient_rows()` replaces the old `compute_recipients()` + manual guardian loop in `send_campaign`: it builds unsaved `EmailCampaignRecipient` rows from a **Guardian pool** (unchanged `filter_*` logic, only when audience includes guardians) and a **Lead pool** (`consent_to_marketing=True`, not unsubscribed, optional `filter_lead_source` — the Guardian stage/year/campus filters never touch leads), then **de-dupes by lowercased email with the Guardian row winning** on a collision (its template context — real child names — is strictly richer). Preview renders one sample per audience type in play (two, for `both`). `retry_failed_recipients` re-pulls `email` from the Guardian *or* Lead. `UnsubscribeView` resolves a token against `Guardian` then `Lead` (they share one 32-random-byte token space; a cross-table collision is astronomically unlikely).
+
+### CORS
+
+`settings.CORS_ALLOWED_ORIGINS` now defaults to `https://tcsch.edu.gh` + `https://www.tcsch.edu.gh` — the **separate marketing site** whose widgets POST here cross-origin. The admissions app's own forms are same-origin and need no entry. New `settings.CORS_ALLOWED_ORIGIN_REGEXES`, default `^https://[a-z0-9-]+\.vercel\.app$`, covers the marketing site's Vercel preview deployments. Both are env-overridable; the live Cloud Run service sets `CORS_ALLOWED_ORIGINS` as an env var (which overrides the code default entirely), so `docs/deployment.md` step 7 sets both there using gcloud's `^##^` alternate-delimiter form. Verified live 2026-09-02: preflight from `tcsch.edu.gh` and a `*.vercel.app` host both echo `access-control-allow-origin`; an unlisted origin gets none.
 
 ## Admissions-specific roles (built on the shared RBAC pattern)
 

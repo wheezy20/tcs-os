@@ -139,10 +139,14 @@ class PdfGateEndpointTests(_PublicEndpointBase):
         self.assertFalse(Lead.objects.get(pk=resp.data["id"]).consent_to_marketing)
 
     def test_missing_pdf_file_is_skipped_not_fatal(self):
-        # Default PDF_GATE_ATTACHMENTS names a file that does not exist yet.
-        resp = self.client.post(PDF_GATE_URL, {
-            "name": "Yaw", "email": "yaw@example-domain.gh", "turnstile_token": "x",
-        }, format="json")
+        # Point at an empty dir so the configured attachment filename resolves
+        # to nothing — the real file now ships in the repo, so we can't rely on
+        # it simply being absent (as this test originally did).
+        with tempfile.TemporaryDirectory() as d:
+            with override_settings(ADMISSIONS_ATTACHMENTS_DIR=d):
+                resp = self.client.post(PDF_GATE_URL, {
+                    "name": "Yaw", "email": "yaw@example-domain.gh", "turnstile_token": "x",
+                }, format="json")
         self.assertEqual(resp.status_code, 201)
         to_lead = [m for m in mail.outbox if m.to == ["yaw@example-domain.gh"]][0]
         self.assertEqual(to_lead.attachments, [])  # nothing attached, still delivered
