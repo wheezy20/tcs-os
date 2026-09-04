@@ -426,6 +426,7 @@ class _LeadCreateSerializer(serializers.Serializer):
     an omitted or blank value is False, regardless of frontend behaviour."""
 
     SOURCE = None  # set by subclass
+    UTM_FIELDS = ("utm_source", "utm_medium", "utm_campaign")
 
     name = serializers.CharField(max_length=255)
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -435,6 +436,13 @@ class _LeadCreateSerializer(serializers.Serializer):
     grade_interest = serializers.CharField(max_length=50, required=False, allow_blank=True)
     consent_to_marketing = serializers.BooleanField(required=False, default=False)
 
+    # Campaign attribution (b4). Deliberately no max_length and allow_null: an
+    # over-long or null UTM value from the marketing site must never cost us a
+    # real lead — it's truncated to the model's 200-char field in create().
+    utm_source = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    utm_medium = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    utm_campaign = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
     def validate(self, data):
         if not data.get("email") and not data.get("phone"):
             raise serializers.ValidationError(
@@ -443,6 +451,7 @@ class _LeadCreateSerializer(serializers.Serializer):
         return data
 
     def create(self, validated_data):
+        utm = {f: (validated_data.get(f) or "")[:200] for f in self.UTM_FIELDS}
         return Lead.objects.create(
             source=self.SOURCE,
             name=validated_data["name"],
@@ -450,6 +459,7 @@ class _LeadCreateSerializer(serializers.Serializer):
             phone=validated_data.get("phone", ""),
             grade_interest=validated_data.get("grade_interest", ""),
             consent_to_marketing=validated_data.get("consent_to_marketing", False),
+            **utm,
         )
 
     def to_representation(self, instance):

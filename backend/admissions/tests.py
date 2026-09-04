@@ -7,19 +7,25 @@ Turnstile is patched out (it makes a real Cloudflare HTTP call); email uses
 Django's in-memory backend, so mail.outbox is asserted directly.
 """
 
+import io
 import os
 import tempfile
 from unittest import mock
 
+from django.contrib import admin
+from django.contrib.auth.models import Group, User
 from django.core import mail
 from django.core.cache import cache
-from django.test import Client, TestCase, override_settings
+from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.test import Client, RequestFactory, TestCase, override_settings
 from rest_framework.test import APIClient
 
-from . import bulk_email, emails
+from . import access, bulk_email, emails
+from .admin import ApplicationAdmin, DocumentInline, FamilyAdmin, GuardianAdmin, HealthInfoInline, StudentAdmin
 from .models import (
-    Application, Campus, EmailCampaign, EmailCampaignRecipient, Family, Guardian, Lead, Student,
-    TransactionalEmail,
+    Application, Campus, EmailCampaign, EmailCampaignRecipient, Family, Guardian, Lead, StaffProfile,
+    Student, TransactionalEmail,
 )
 
 QUICK_INTEREST_URL = "/api/admissions/quick-interest/"
@@ -166,6 +172,67 @@ class PdfGateEndpointTests(_PublicEndpointBase):
         to_lead = [m for m in mail.outbox if m.to == ["abena@example-domain.gh"]][0]
         self.assertEqual(len(to_lead.attachments), 1)
         self.assertEqual(to_lead.attachments[0][0], "admissions-overview-and-fees.pdf")
+
+
+class LeadUtmCaptureTests(_PublicEndpointBase):
+    """b4 — the flat utm_source/utm_medium/utm_campaign fields, passed through
+    in the POST body by the marketing-site form's JS."""
+
+    def test_utm_params_captured_on_quick_interest(self):
+        resp = self.client.post(QUICK_INTEREST_URL, {
+            "name": "Ama", "email": "ama@example-domain.gh",
+            "utm_source": "google", "utm_medium": "cpc", "utm_campaign": "spring-open-day-2026",
+            "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        lead = Lead.objects.get(pk=resp.data["id"])
+        self.assertEqual(
+            (lead.utm_source, lead.utm_medium, lead.utm_campaign),
+            ("google", "cpc", "spring-open-day-2026"),
+        )
+
+    def test_utm_params_captured_on_pdf_gate(self):
+        resp = self.client.post(PDF_GATE_URL, {
+            "name": "Yaa", "email": "yaa@example-domain.gh",
+            "utm_source": "facebook", "utm_medium": "social", "utm_campaign": "fees-guide",
+            "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        lead = Lead.objects.get(pk=resp.data["id"])
+        self.assertEqual(lead.utm_source, "facebook")
+        self.assertEqual(lead.utm_campaign, "fees-guide")
+
+    def test_utm_absent_defaults_to_blank(self):
+        resp = self.client.post(QUICK_INTEREST_URL, {
+            "name": "No UTM", "email": "no-utm@example-domain.gh", "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        lead = Lead.objects.get(pk=resp.data["id"])
+        self.assertEqual((lead.utm_source, lead.utm_medium, lead.utm_campaign), ("", "", ""))
+
+    def test_utm_not_echoed_in_response(self):
+        resp = self.client.post(QUICK_INTEREST_URL, {
+            "name": "Ama", "email": "ama@example-domain.gh",
+            "utm_source": "google", "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(set(resp.data), {"id", "source", "created_at"})
+
+    def test_overlong_utm_is_truncated_not_rejected(self):
+        resp = self.client.post(QUICK_INTEREST_URL, {
+            "name": "Long", "email": "long@example-domain.gh",
+            "utm_campaign": "x" * 500, "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)  # a junk-length UTM never costs a lead
+        self.assertEqual(len(Lead.objects.get(pk=resp.data["id"]).utm_campaign), 200)
+
+    def test_null_utm_value_is_accepted(self):
+        resp = self.client.post(QUICK_INTEREST_URL, {
+            "name": "Null", "email": "null@example-domain.gh",
+            "utm_source": None, "utm_medium": None, "utm_campaign": None,
+            "turnstile_token": "x",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(Lead.objects.get(pk=resp.data["id"]).utm_source, "")
 
 
 class BulkEmailAudienceTests(TestCase):
@@ -550,3 +617,415 @@ class TransactionalEmailWorkerTests(TestCase):
         self.assertEqual(set(r.status for r in rows), {"sent"})  # inline fallback (no queue)
         self.assertEqual([r.last_error for r in rows], ["", ""])
         self.assertEqual(len(mail.outbox), 2)
+
+
+class AdministrationGroupTests(TestCase):
+    """b5 — the "Administration" Group created by migration 0017 bundles the
+    three deliberately-not-auto-granted custom admissions permissions.
+    Updated 2026-09-05: also carries explicit base view/change permissions on
+    every admissions model — see AdministrationCrudPermissionTests below for
+    the full CRUD-grant coverage; this class stays focused on the 3 custom
+    ones, which predate that fix."""
+
+    def test_group_has_all_three_custom_permissions(self):
+        from django.contrib.auth.models import Group
+
+        group = Group.objects.get(name="Administration")
+        codenames = set(group.permissions.values_list("codename", flat=True))
+        self.assertTrue({"can_decide", "can_send_bulk_email", "can_view_health_info"} <= codenames)
+
+    def test_member_of_group_has_all_three_perms(self):
+        from django.contrib.auth.models import Group, User
+
+        user = User.objects.create_user("hire", password="x")
+        user.groups.add(Group.objects.get(name="Administration"))
+        # re-fetch to clear the per-request permission cache
+        user = User.objects.get(pk=user.pk)
+        self.assertTrue(user.has_perm("admissions.can_decide"))
+        self.assertTrue(user.has_perm("admissions.can_view_health_info"))
+        self.assertTrue(user.has_perm("admissions.can_send_bulk_email"))
+
+
+class AdministrationCrudPermissionTests(TestCase):
+    """2026-09-05 — Administration now carries explicit base view/change
+    permissions on every admissions model, not just its 3 custom ones (see
+    migration 0017's updated PERMISSION_CODENAMES). This is the direct,
+    exhaustive proof of that grant — and, just as importantly, proof that
+    add_*/delete_* were deliberately NOT included (see the migration's own
+    docstring for the two known, accepted consequences of that boundary)."""
+
+    CRUD_MODELS = (
+        "application", "student", "family", "guardian", "document", "note",
+        "emergencycontact", "healthinfo", "decision", "offer", "lead",
+        "emailcampaign", "capacity", "campus",
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("crud_admin", password="x", is_staff=True)
+        cls.user.groups.add(Group.objects.get(name="Administration"))
+
+    def _refetch(self):
+        # has_perm() caches on the instance — re-fetch for a clean check.
+        return User.objects.get(pk=self.user.pk)
+
+    def test_has_view_and_change_on_every_listed_model(self):
+        user = self._refetch()
+        for model in self.CRUD_MODELS:
+            with self.subTest(model=model):
+                self.assertTrue(user.has_perm(f"admissions.view_{model}"))
+                self.assertTrue(user.has_perm(f"admissions.change_{model}"))
+
+    def test_does_not_have_add_or_delete_on_any_listed_model(self):
+        """The deliberate boundary — "view/change", not full Django CRUD.
+        See migration 0017's docstring for the two known consequences."""
+        user = self._refetch()
+        for model in self.CRUD_MODELS:
+            with self.subTest(model=model):
+                self.assertFalse(user.has_perm(f"admissions.add_{model}"))
+                self.assertFalse(user.has_perm(f"admissions.delete_{model}"))
+
+    def test_still_has_the_three_custom_permissions(self):
+        user = self._refetch()
+        self.assertTrue(user.has_perm("admissions.can_decide"))
+        self.assertTrue(user.has_perm("admissions.can_view_health_info"))
+        self.assertTrue(user.has_perm("admissions.can_send_bulk_email"))
+
+
+def _make_application(year_group, stage="inquiry", campus=None, academic_year="2026/2027"):
+    family = Family.objects.create()
+    student = Student.objects.create(family=family, full_name=f"Student ({year_group})")
+    return Application.objects.create(
+        student=student, stage=stage, academic_year=academic_year,
+        year_group_applied_for=year_group, campus=campus,
+    )
+
+
+def _make_coordinator(username, band):
+    user = User.objects.create_user(username, password="x", is_staff=True)
+    StaffProfile.objects.create(user=user, grade_band=band)
+    user.groups.add(Group.objects.get(name=access.COORDINATOR_GROUP_BY_BAND[band]))
+    return user
+
+
+def _make_administration_user(username="office_admin"):
+    user = User.objects.create_user(username, password="x", is_staff=True)
+    user.groups.add(Group.objects.get(name="Administration"))
+    return user
+
+
+def _admin_request(user):
+    request = RequestFactory().get("/admin/admissions/application/")
+    request.user = user
+    return request
+
+
+class GradeBandDefinitionTests(TestCase):
+    """Sanity-checks the single source of truth GRADE_BANDS is derived
+    from (STUDENT_ID_CLASSIFICATION) rather than a second, hand-maintained
+    grade list that could silently drift from it."""
+
+    def test_bands_are_disjoint(self):
+        from .models import GRADE_BANDS
+        preschool, primary, jhs = GRADE_BANDS["preschool"], GRADE_BANDS["primary"], GRADE_BANDS["jhs"]
+        self.assertEqual(preschool & primary, frozenset())
+        self.assertEqual(primary & jhs, frozenset())
+        self.assertEqual(preschool & jhs, frozenset())
+
+    def test_bands_cover_exactly_the_classified_grades(self):
+        from .models import GRADE_BANDS, STUDENT_ID_CLASSIFICATION
+        union = GRADE_BANDS["preschool"] | GRADE_BANDS["primary"] | GRADE_BANDS["jhs"]
+        self.assertEqual(union, set(STUDENT_ID_CLASSIFICATION))
+
+    def test_grade_10_has_no_band(self):
+        # TCS doesn't offer SHS yet — no classification code, so no band either.
+        from .models import GRADE_BANDS
+        self.assertNotIn("Grade 10", GRADE_BANDS["preschool"] | GRADE_BANDS["primary"] | GRADE_BANDS["jhs"])
+
+
+class GradeBandCoordinatorScopingTests(TestCase):
+    """Phase 6.2 — the actual queryset filtering, exercised the way the real
+    admin uses it: GradeBandScopedAdmin.get_queryset() via RequestFactory,
+    not just scoped_grades_for() in isolation."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.main = Campus.objects.get(name="Main")
+        cls.annex = Campus.objects.get(name="Annex")
+
+        # Preschool band, deliberately split across both campuses (Annex only
+        # accepts Pre Nursery/Nursery 1 — both are Preschool-band grades).
+        cls.app_preschool_main = _make_application("Pre Nursery", campus=cls.main)
+        cls.app_preschool_annex = _make_application("Nursery 1", campus=cls.annex)
+        cls.app_primary = _make_application("Grade 3", campus=cls.main)
+        cls.app_jhs = _make_application("Grade 8", campus=cls.main)
+        cls.app_unbanded = _make_application("Grade 11", campus=cls.main)  # no classification code
+
+        cls.preschool_user = _make_coordinator("preschool_coord", "preschool")
+        cls.primary_user = _make_coordinator("primary_coord", "primary")
+        cls.jhs_user = _make_coordinator("jhs_coord", "jhs")
+        cls.admin_user = _make_administration_user()
+        cls.superuser = User.objects.create_superuser("root", password="x")
+
+        # Misconfigured: in a Coordinator group, but no StaffProfile at all.
+        cls.misconfigured_user = User.objects.create_user("no_profile_coord", password="x", is_staff=True)
+        cls.misconfigured_user.groups.add(Group.objects.get(name="Primary Coordinator"))
+
+    def _visible_ids(self, user):
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        return set(admin_obj.get_queryset(_admin_request(user)).values_list("id", flat=True))
+
+    def test_preschool_coordinator_sees_own_band_across_both_campuses(self):
+        visible = self._visible_ids(self.preschool_user)
+        self.assertEqual(visible, {self.app_preschool_main.id, self.app_preschool_annex.id})
+
+    def test_primary_coordinator_sees_only_primary_band(self):
+        self.assertEqual(self._visible_ids(self.primary_user), {self.app_primary.id})
+
+    def test_jhs_coordinator_sees_only_jhs_band(self):
+        self.assertEqual(self._visible_ids(self.jhs_user), {self.app_jhs.id})
+
+    def test_unbanded_grade_visible_only_to_administration_and_superuser(self):
+        for user in (self.preschool_user, self.primary_user, self.jhs_user):
+            self.assertNotIn(self.app_unbanded.id, self._visible_ids(user))
+        self.assertIn(self.app_unbanded.id, self._visible_ids(self.admin_user))
+        self.assertIn(self.app_unbanded.id, self._visible_ids(self.superuser))
+
+    def test_administration_and_superuser_see_everything(self):
+        all_ids = {
+            self.app_preschool_main.id, self.app_preschool_annex.id,
+            self.app_primary.id, self.app_jhs.id, self.app_unbanded.id,
+        }
+        self.assertEqual(self._visible_ids(self.admin_user), all_ids)
+        self.assertEqual(self._visible_ids(self.superuser), all_ids)
+
+    def test_misconfigured_coordinator_sees_nothing(self):
+        self.assertEqual(self._visible_ids(self.misconfigured_user), set())
+
+    def test_grade_change_moves_application_between_coordinators_live(self):
+        """The b6.2 headline requirement: a live queryset filter, not a
+        stored assignment, so a post-submission grade edit re-resolves
+        without any backfill."""
+        app = _make_application("Grade 6", campus=self.main)  # primary band
+        self.assertIn(app.id, self._visible_ids(self.primary_user))
+        self.assertNotIn(app.id, self._visible_ids(self.jhs_user))
+
+        app.year_group_applied_for = "Grade 7"  # now JHS band
+        app.save()
+
+        self.assertNotIn(app.id, self._visible_ids(self.primary_user))
+        self.assertIn(app.id, self._visible_ids(self.jhs_user))
+
+    def test_has_change_permission_blocks_out_of_band_object(self):
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        request = _admin_request(self.primary_user)
+        self.assertFalse(admin_obj.has_change_permission(request, self.app_jhs))
+        self.assertTrue(admin_obj.has_change_permission(request, self.app_primary))
+
+        # Superuser: scoped_grades_for() returns None *and* Django's own
+        # has_change_permission is unconditionally True for a superuser.
+        su_request = _admin_request(self.superuser)
+        self.assertTrue(admin_obj.has_change_permission(su_request, self.app_jhs))
+
+    def test_administration_bypasses_the_band_scoping_check_itself(self):
+        """Isolates GradeBandScopedAdmin's OWN bypass (scoped_grades_for()
+        returning None for an Administration member) from Django's base
+        model permissions, which are a separate mechanism entirely (see
+        test_administration_member_passes_same_checks_as_superuser below,
+        which exercises the two together — this test stays useful on its
+        own as documentation of what GradeBandScopedAdmin itself is
+        responsible for)."""
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        request = _admin_request(self.admin_user)
+        self.assertTrue(admin_obj._in_scope(request, self.app_jhs))
+
+    def test_administration_member_passes_same_checks_as_superuser(self):
+        """2026-09-05 fix — the "Administration" group now grants explicit
+        base view/change permissions (migration 0017), not just its 3 custom
+        ones, so a genuinely NON-superuser Administration member now passes
+        exactly the same admin checks a superuser does — the gap flagged
+        after the first Phase 6.2 pass is closed. self.admin_user here is
+        deliberately not a superuser (see setUpTestData)."""
+        self.assertFalse(self.admin_user.is_superuser)
+
+        checks = [
+            (ApplicationAdmin(Application, admin.site), self.app_jhs),
+            (StudentAdmin(Student, admin.site), self.app_jhs.student),
+            (FamilyAdmin(Family, admin.site), self.app_jhs.student.family),
+            (GuardianAdmin(Guardian, admin.site), None),
+        ]
+        for admin_obj, obj in checks:
+            admin_request = _admin_request(self.admin_user)
+            su_request = _admin_request(self.superuser)
+            self.assertEqual(
+                admin_obj.has_view_permission(admin_request, obj),
+                admin_obj.has_view_permission(su_request, obj),
+            )
+            self.assertEqual(
+                admin_obj.has_change_permission(admin_request, obj),
+                admin_obj.has_change_permission(su_request, obj),
+            )
+            self.assertTrue(admin_obj.has_view_permission(admin_request, obj))
+            self.assertTrue(admin_obj.has_change_permission(admin_request, obj))
+
+    def test_family_admin_filtered_and_distinct_with_multiple_in_band_children(self):
+        family = Family.objects.create()
+        s1 = Student.objects.create(family=family, full_name="Kid One")
+        s2 = Student.objects.create(family=family, full_name="Kid Two")
+        Application.objects.create(student=s1, stage="inquiry", academic_year="2026/2027",
+                                    year_group_applied_for="Pre Nursery")
+        Application.objects.create(student=s2, stage="inquiry", academic_year="2026/2027",
+                                    year_group_applied_for="Nursery 2")
+
+        admin_obj = FamilyAdmin(Family, admin.site)
+        qs = admin_obj.get_queryset(_admin_request(self.preschool_user))
+        # .distinct() must collapse the two-child join fan-out to one row.
+        self.assertEqual(qs.filter(pk=family.pk).count(), 1)
+
+    def test_readonly_fields_for_coordinator_are_the_whole_model(self):
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        coordinator_fields = set(admin_obj.get_readonly_fields(_admin_request(self.primary_user), self.app_primary))
+        self.assertIn("stage", coordinator_fields)
+        self.assertIn("campus", coordinator_fields)
+        self.assertIn("year_group_applied_for", coordinator_fields)
+
+        admin_fields = set(admin_obj.get_readonly_fields(_admin_request(self.admin_user), self.app_primary))
+        self.assertNotIn("stage", admin_fields)  # Administration keeps the normal small readonly set
+
+    def test_get_actions_hides_unrestricted_stage_actions_for_coordinator(self):
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        coordinator_actions = admin_obj.get_actions(_admin_request(self.primary_user))
+        self.assertNotIn("mark_as_application", coordinator_actions)
+        self.assertNotIn("mark_as_document_review", coordinator_actions)
+        self.assertNotIn("mark_as_enrolled", coordinator_actions)
+        self.assertIn("move_to_document_review", coordinator_actions)
+
+        admin_actions = admin_obj.get_actions(_admin_request(self.admin_user))
+        self.assertIn("mark_as_document_review", admin_actions)
+        self.assertIn("move_to_document_review", admin_actions)
+
+    def test_health_info_inline_scoped_to_own_band(self):
+        from .models import HealthInfo
+        HealthInfo.objects.create(application=self.app_preschool_main)
+        HealthInfo.objects.create(application=self.app_jhs)
+
+        inline = HealthInfoInline(Application, admin.site)
+        visible = inline.get_queryset(_admin_request(self.preschool_user))
+        self.assertEqual(list(visible.values_list("application_id", flat=True)), [self.app_preschool_main.id])
+
+    def test_document_inline_scoped_to_own_band(self):
+        from .models import Document
+        Document.objects.create(application=self.app_primary, document_type="other")
+        Document.objects.create(application=self.app_jhs, document_type="other")
+
+        inline = DocumentInline(Application, admin.site)
+        visible = inline.get_queryset(_admin_request(self.primary_user))
+        self.assertEqual(list(visible.values_list("application_id", flat=True)), [self.app_primary.id])
+
+
+class MoveToDocumentReviewTests(TestCase):
+    """The one write a coordinator can trigger — see
+    Application.move_to_document_review() in models.py."""
+
+    def test_moves_from_inquiry(self):
+        app = _make_application("Grade 2", stage="inquiry")
+        result = app.move_to_document_review()
+        self.assertEqual(result.stage, "document_review")
+        app.refresh_from_db()
+        self.assertEqual(app.stage, "document_review")
+
+    def test_moves_from_application_and_assigns_reference_via_real_save(self):
+        # Created directly at "inquiry" with no application_reference, same as
+        # a real public Inquiry submission — proves this goes through the
+        # real save() pipeline (which assigns application_reference for
+        # document_review, per STAGES_REQUIRING_APPLICATION_REFERENCE), not a
+        # raw field write that would skip it.
+        app = _make_application("Grade 2", stage="inquiry")
+        self.assertIsNone(app.application_reference)
+        app.move_to_document_review()
+        app.refresh_from_db()
+        self.assertIsNotNone(app.application_reference)
+        self.assertTrue(app.application_reference.startswith("APP-"))
+
+    def test_rejects_when_already_past_application_stage(self):
+        app = _make_application("Grade 2", stage="document_review")
+        with self.assertRaises(ValidationError):
+            app.move_to_document_review()
+        app.refresh_from_db()
+        self.assertEqual(app.stage, "document_review")  # unchanged
+
+    def test_rejects_from_terminal_stages(self):
+        for stage in ("rejected", "waitlisted", "offer_declined", "offer", "enrolled"):
+            app = _make_application("Grade 2", stage="inquiry")
+            # Application.save()'s own gate blocks *entering* offer/enrolled
+            # without an accepted Decision/Offer — irrelevant to what's under
+            # test here (move_to_document_review's OWN precondition), so
+            # write the starting stage directly rather than fighting that
+            # unrelated gate to construct the fixture.
+            Application.objects.filter(pk=app.pk).update(stage=stage)
+            app.refresh_from_db()
+
+            with self.assertRaises(ValidationError):
+                app.move_to_document_review()
+            app.refresh_from_db()
+            self.assertEqual(app.stage, stage)  # never silently changed
+
+    def test_double_call_is_safe_not_a_double_transition(self):
+        app = _make_application("Grade 2", stage="inquiry")
+        app.move_to_document_review()
+        with self.assertRaises(ValidationError):
+            app.move_to_document_review()  # second call — already document_review now
+        app.refresh_from_db()
+        self.assertEqual(app.stage, "document_review")
+
+
+class MoveToDocumentReviewAdminActionTests(TestCase):
+    def test_partial_success_reports_succeeded_and_skipped(self):
+        eligible = _make_application("Grade 3", stage="inquiry")
+        ineligible = _make_application("Grade 3", stage="rejected")
+
+        admin_obj = ApplicationAdmin(Application, admin.site)
+        request = _admin_request(_make_administration_user())
+        request._messages = mock.Mock()
+
+        admin_obj.move_to_document_review(
+            request, Application.objects.filter(pk__in=[eligible.pk, ineligible.pk])
+        )
+
+        eligible.refresh_from_db()
+        ineligible.refresh_from_db()
+        self.assertEqual(eligible.stage, "document_review")
+        self.assertEqual(ineligible.stage, "rejected")  # untouched
+
+
+class AuditStaffRolesCommandTests(TestCase):
+    def _run(self):
+        out = io.StringIO()
+        call_command("audit_staff_roles", stdout=out)
+        return out.getvalue()
+
+    def test_clean_setup_reports_no_problems(self):
+        _make_coordinator("clean_coord", "preschool")
+        _make_administration_user()
+        self.assertIn("No staff-role inconsistencies found.", self._run())
+
+    def test_flags_coordinator_group_without_band(self):
+        user = User.objects.create_user("bandless", password="x", is_staff=True)
+        user.groups.add(Group.objects.get(name="JHS Coordinator"))
+        output = self._run()
+        self.assertIn("bandless", output)
+        self.assertIn("fails closed", output)
+
+    def test_flags_band_without_matching_group(self):
+        user = User.objects.create_user("groupless", password="x", is_staff=True)
+        StaffProfile.objects.create(user=user, grade_band="jhs")
+        output = self._run()
+        self.assertIn("groupless", output)
+        self.assertIn("has scope with none of the coordinator permissions", output)
+
+    def test_flags_administration_and_coordinator_together(self):
+        user = _make_coordinator("dual_role", "primary")
+        user.groups.add(Group.objects.get(name="Administration"))
+        output = self._run()
+        self.assertIn("dual_role", output)
+        self.assertIn("Administration wins", output)

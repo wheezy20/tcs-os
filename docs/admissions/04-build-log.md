@@ -388,3 +388,48 @@ Committed as (see git log — this session's b2 commit).
 ## 2026-09-03 — Reference-ID formats confirmed final
 
 TCS confirmed there is no pre-existing paper/legacy student-numbering convention to reconcile against. The three formats from Phase 2.5 — `INQ-YYYY-NNNN`, `APP-YYYY-NNNN`, and the `YYPPNNNN` Student ID — are now settled, not provisional. Removed the "provisional / confirm before treating as final" language from `02-stack-and-schema.md` and `03-build-order.md`. No code change — the formats were already implemented as-is.
+
+## 2026-09-03 — b4 (flat UTM capture on Lead) + b5 (Administration Group)
+
+Two small, low-risk follow-ups on the Lead-capture feature. Built together; one test run; migrations `0016` + `0017` (both additive/safe).
+
+### b4 — flat UTM fields on `Lead`
+
+The lightweight version of campaign attribution — explicitly *not* the normalised `Campaign`/`LeadSource`/`Activity` model (that's now a logged "someday" item, see `03-build-order.md` Phase 6.1).
+
+- **Model** (`0016_lead_utm_fields`): `utm_source`, `utm_medium`, `utm_campaign` — `CharField(max_length=200, blank=True, default="")` on `Lead`, grouped after `consent_to_marketing`. Untrusted free text, deliberately distinct from the server-set `source`.
+- **Serializer** (`_LeadCreateSerializer`, so both `quick-interest` and `pdf-gate` get them): three optional `CharField`s with **no `max_length` and `allow_null=True`** — a junk-length or `null` UTM value from the marketing site must never 400 away a real lead. `create()` truncates each to 200 chars (`(validated_data.get(f) or "")[:200]`) before writing.
+- **Response contract unchanged** — still `{id, source, created_at}` (+ `detail` for pdf-gate). UTM values are write-only.
+- **Admin** (`LeadAdmin`): a combined `utm` column ("source / medium / campaign", `·` for a blank part, `—` when all blank); UTM fields added to `search_fields` and `readonly_fields`. No list_filter (campaign values are high-cardinality free text).
+- **Frontend note:** the actual query-param capture (`?utm_source=…` → hidden fields → POST body) lives in the marketing site's form JS, which is a separate repo/team — there are no quick-interest / pdf-gate form copies in this repo. This change is the backend half of that contract.
+
+### b5 — `Administration` Django Group
+
+- **`0017_administration_group`** (data migration, idempotent): `get_or_create` a Group named `Administration`, then `permissions.set()` it to exactly `can_decide` + `can_view_health_info` + `can_send_bulk_email` (the three admissions permissions that are all deliberately not auto-granted). Force-runs `create_permissions` for every app first so the custom `Meta.permissions` codenames exist to attach even on a fresh `migrate` (post_migrate hasn't fired yet at data-migration time). Reverse deletes the Group.
+- Nothing auto-assigns users. Onboarding a senior staff member is now "add them to `Administration`" instead of ticking three boxes and remembering which three. Documented in `02-stack-and-schema.md` (new `Administration` Group subsection) and `deployment.md`'s admin-setup notes.
+
+### Testing
+
+`admissions/tests.py` **39 → 47, all green** (~5 s, in-memory SQLite). `makemigrations --check` clean.
+- `LeadUtmCaptureTests` (6): UTM captured on quick-interest and pdf-gate; absent → all `""`; not echoed in the response; a 500-char value → `201` + stored value truncated to 200; `null` values accepted → `""`.
+- `AdministrationGroupTests` (2): the Group exists with exactly the three permission codenames (proves the migration's `create_permissions` guard works against a fresh test DB); a user added to it resolves all three `has_perm` checks.
+
+### Not deployed this session
+
+Migrations `0016` + `0017` ride along with b2's `0015` on the next `admissions-migrate` run. All three are additive and safe; `0017` is idempotent. No env-var or queue changes for b4/b5. See `deployment.md` "Current deployment state".
+
+Committed as (see git log — this session's b4/b5 commit).
+
+## 2026-09-04 — Phase 6.2: grade-band coordinator RBAC
+
+Full plan (StaffProfile design, the live queryset-filtering mechanism, the `can_view_health_info` question) proposed and approved point by point before any code — same rigor as Phase 3/5/6. Approved resolutions: `can_view_health_info` Option B (all 3 bands, still band-scoped); a single restricted `move_to_document_review` action rather than an open `stage` field (everything else on Application stays readonly for coordinators); Notes get add+view+change, no delete; `StaffProfile.grade_band` stays authoritative alongside `audit_staff_roles`; doc home matches b2/b5's pattern. Before building the write-access piece specifically, the exact guard logic for `Application.move_to_document_review()` was shown and confirmed on its own, per the user's request, before the rest was built.
+
+**What shipped:** `StaffProfile` (migration `0018`) + `GRADE_BANDS` (derived from `STUDENT_ID_CLASSIFICATION`, not a second list) + `admissions/access.py`'s `scoped_grades_for()` + `GradeBandScopedAdmin`/`GradeBandScopedInline` mixins on `ApplicationAdmin`/`StudentAdmin`/`FamilyAdmin`/`GuardianAdmin` and the 4 Application inlines + `Application.move_to_document_review()` (real `save()`, `select_for_update()`, re-validated at write time) + 3 Coordinator Groups (migration `0019`) + `manage.py audit_staff_roles` + `StaffProfileInline` on a re-registered `UserAdmin`. Full detail in `02-stack-and-schema.md`'s new "Phase 6.2" section.
+
+**A real, pre-existing gap surfaced by testing, not fixed in this session:** the `Administration` group (b5) grants only its 3 named custom permissions, no base Django model CRUD — a non-superuser Administration member would be blocked by `has_change_permission` for lack of `change_application`. Never hit in practice (every Administration user so far is also a superuser). Flagged in `02-stack-and-schema.md` for a decision, not silently fixed or silently ignored.
+
+**Testing:** 27 new tests, `admissions/tests.py` **47 → 74, all green** (~14s, in-memory SQLite). Covers: band definitions (disjoint, exhaustive, Grade 10 unbanded); live scoping across all 4 admins + both campuses, via `RequestFactory` against the real `GradeBandScopedAdmin.get_queryset()`; the grade-change-moves-coordinators test (the headline live-filter requirement); object-level `has_change_permission` blocking; readonly-fields and `get_actions` per role; `move_to_document_review()` happy path + real-save-not-raw-write (assigns `application_reference`) + rejects from `document_review`/every terminal stage + a second call raising rather than double-transitioning; the admin action's partial-success reporting; `audit_staff_roles`'s four scenarios. `makemigrations --check` clean; `0019` proven against a fresh DB (same `create_permissions` guard as `0017`).
+
+**Not deployed this session.** Migrations `0018`+`0019` ride the same `admissions-migrate` job as `0015`–`0017`. No env-var/queue changes. Post-deploy: create the 3 coordinator users, Staff status, add each to their Group, set `StaffProfile.grade_band` — all on the same User admin page.
+
+Committed as (see git log — this session's Phase 6.2 commit).

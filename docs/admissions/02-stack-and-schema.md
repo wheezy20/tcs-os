@@ -289,8 +289,24 @@ directly in code, not assumed). Gates the `DecisionInline`/`OfferInline`
 `reset_offer` admin actions via `get_actions()`, which Django's own action
 dispatch treats as a functional block (the action name won't even be
 recognized if submitted directly), not just a hidden dropdown option.
-Assigning the permission to real staff is a one-time manual admin task
-(create a Group, check the box, add users) — no UI was built for it.
+Assigning the permission to real staff is a one-time manual admin task —
+since b5 (2026-09-03) that means **adding them to the `Administration`
+Group** (see below), not ticking individual boxes.
+
+### `Administration` Group (b5, 2026-09-03)
+
+A single Django `Group`, created idempotently by data migration
+`0017_administration_group`, that bundles the three admissions permissions
+which are all deliberately *not* auto-granted: `can_decide`,
+`can_view_health_info`, `can_send_bulk_email`. Onboarding a senior staff
+member is "add them to `Administration`" instead of remembering which three
+boxes to tick. The migration force-runs `create_permissions` for the
+`admissions` app first, so it works on a fresh `migrate` (where the
+post_migrate signal that materialises `Meta.permissions` rows hasn't fired
+yet) as well as on the live DB; `permissions.set()` makes it safe to re-run.
+Reverse migration deletes the Group. Nothing auto-assigns users to it — that
+stays a deliberate admin action. Documented for onboarding in
+`docs/deployment.md`.
 
 ### `Capacity` — soft warning, not a hard block
 
@@ -706,10 +722,11 @@ Deliberately flat — no Family/Guardian/Student/Application, no stage, no workf
 | `grade_interest` | free text, optional |
 | `source` | choices `quick_interest_widget` / `pdf_gate_admissions_overview` — **set server-side per endpoint, never read from the client** |
 | `consent_to_marketing` | `BooleanField(default=False)` — see the consent note below |
+| `utm_source` / `utm_medium` / `utm_campaign` | flat `CharField(max_length=200, blank=True)` (b4, 2026-09-03). Raw campaign attribution lifted from the marketing-site URL query string by the form's JS and passed through in the POST body — **untrusted free text, distinct from `source`**. Truncated to 200 chars in the serializer (no `max_length` / with `allow_null` on the serializer field) so a junk-length or `null` value can never 400 away a real lead. Deliberately not a normalised `Campaign` / `LeadSource` / `Activity` model — that's a logged "someday" item in `03-build-order.md` |
 | `bulk_email_unsubscribe_token` / `bulk_email_unsubscribed_at` | identical pattern and naming to `Guardian`, so `bulk_email.py` and `UnsubscribeView` treat the two interchangeably |
 | `created_at` | |
 
-Admin: a plain list (`name`, contact, `grade_interest`, `source`, `consent_to_marketing`, unsubscribed-at, `created_at`), filterable by source and consent. `has_add_permission` returns `False` — leads only ever arrive via the two endpoints.
+Admin: a plain list (`name`, contact, `grade_interest`, `source`, a combined `utm` "source / medium / campaign" column, `consent_to_marketing`, unsubscribed-at, `created_at`), filterable by source and consent, searchable by name/email/phone/UTM. `has_add_permission` returns `False` — leads only ever arrive via the two endpoints.
 
 ### Public endpoints
 
@@ -784,11 +801,104 @@ already off the critical path, and routing an admin action through a queue
 would add a failure mode to a workflow that currently gives immediate
 feedback. They share `_deliver()`, so migrating them later is a small change.
 
+## Phase 6.2 — Grade-band coordinator RBAC (2026-09-04)
+
+Real access control for a real 4-person team: you (overall admin, `Administration` group + superuser, sees everything) plus 3 coordinators (Preschool, Primary, JHS), each scoped to their band only. Full plan (model design, the queryset-filtering mechanism, the `can_view_health_info` question) proposed and approved point by point before any code, same rigor as Phase 3/5/6.
+
+### `StaffProfile` — the authoritative scope
+
+```
+user         OneToOne -> auth.User
+grade_band   choices: preschool / primary / jhs / "" (blank = unscoped)
+```
+
+`grade_band` is what `admissions/access.py`'s `scoped_grades_for(user)` actually reads to decide what a user's admin queries return — **never** which Coordinator Group they're in. The Group (below) is a separate, deliberately redundant carrier for *permissions*; keeping the two in sync is a manual admin responsibility (assign both on the same `UserAdmin` page, via a new `StaffProfileInline`), checked by `manage.py audit_staff_roles`, not enforced by a DB constraint. Migration `0018`.
+
+### Grade bands — derived, not hand-maintained
+
+`GRADE_BANDS` (in `models.py`) is built from the existing `STUDENT_ID_CLASSIFICATION` dict (Phase 2.5), not a second grade list:
+
+| Band | Classification codes | Grades |
+|---|---|---|
+| `preschool` | 01 + 02 | Pre Nursery, Nursery 1, Nursery 2, Kindergarten 1, Kindergarten 2 |
+| `primary` | 03 | Grade 1 – Grade 6 |
+| `jhs` | 04 | Grade 7 – Grade 9 |
+
+Bands are disjoint by construction. A grade with no classification code — SHS (Grade 10-12, which TCS doesn't offer yet), or a parent's free-text "Other" entry on the public form — belongs to **no band**, and is visible only to `Administration`/superusers. This is the correct fail-closed default, not an oversight: nobody is silently auto-assigned an application nobody configured them for.
+
+### The filtering mechanism — live, not stored
+
+`admissions/access.py`:
+
+```python
+def scoped_grades_for(user):
+    """None      -> unrestricted (superuser / Administration / non-coordinator staff)
+       frozenset -> restrict to these year_group_applied_for values
+                    (empty -> sees NOTHING: fail-closed for a coordinator
+                    whose grade_band isn't set)"""
+```
+
+`GradeBandScopedAdmin` (a mixin, `admin.py`) overrides `get_queryset()` to filter on the LIVE `year_group_applied_for` column via a per-admin `band_lookup` path — never a stored per-application band. Applied to:
+
+| Admin | `band_lookup` |
+|---|---|
+| `ApplicationAdmin` | `year_group_applied_for__in` |
+| `StudentAdmin` | `applications__year_group_applied_for__in` |
+| `FamilyAdmin` | `students__applications__year_group_applied_for__in` |
+| `GuardianAdmin` | `family__students__applications__year_group_applied_for__in` |
+
+(the last three `.distinct()`, since the join fans out for a family with more than one in-band child). `has_view_permission`/`has_change_permission`/`has_delete_permission` are also overridden, object-aware, so a direct URL to an out-of-band Application's change page is blocked, not just hidden from the changelist. A sibling mixin, `GradeBandScopedInline`, applies the same `get_queryset()` filter to the `Document`/`Note`/`EmergencyContact`/`HealthInfo` inlines — defense-in-depth, since what actually gates a coordinator off those rows is the parent `ApplicationAdmin` change page they'd reach them from, which is already blocked for an out-of-band row.
+
+**Because the filter is live, not stored:** if a family updates `year_group_applied_for` after submission (Grade 6 → Grade 7), the application resolves to its new coordinator (Primary → JHS) on the very next page load — no backfill, no stored assignment to go stale. Confirmed by a dedicated test that flips a real row's grade and re-checks both coordinators' visible sets before and after.
+
+### The one write a coordinator gets — `Application.move_to_document_review()`
+
+Every other Application field is readonly for a coordinator (`ApplicationAdmin.get_readonly_fields()`) — deliberately no open `stage` dropdown, so `rejected`/`waitlisted`/`offer`/`enrolled` are simply unreachable, never a permission check away from being selectable. The one narrow exception:
+
+```python
+def move_to_document_review(self):
+    with transaction.atomic():
+        locked = Application.objects.select_for_update().get(pk=self.pk)
+        if locked.stage not in ("inquiry", "application"):
+            raise ValidationError(...)
+        locked.stage = "document_review"
+        locked.save()
+        return locked
+```
+
+Why this needs its own guard rather than reusing `save()`'s existing gate: `save()`'s `_requirement_met_for_stage` only blocks *entering* `GATED_STAGES` (`offer`/`enrolled`) — nothing in the model stops `document_review` from being set from ANY prior stage, including a terminal one. That's fine for the existing admin-only `mark_as_document_review` bulk action (Administration is trusted with that), but not for a coordinator's one narrow grant. So this method adds its own starting-stage precondition and re-validates it under `select_for_update()` **at write time**, not just when the admin action's queryset was first built — closing the gap between "looked eligible when the changelist rendered" and "is actually being written," so a double-click, two coordinators racing the same row, or someone else moving it on in another tab all resolve to exactly one write or a clean `ValidationError`, never a silent no-op or a double transition. It goes through the real `save()` (never a raw `.update()`), so `application_reference` assignment and every other `save()`-time side effect still fire.
+
+Wired to a new `ApplicationAdmin` action `move_to_document_review`; the existing unrestricted `mark_as_application`/`mark_as_document_review`/`mark_as_enrolled` bulk actions (any starting stage, no precondition) are hidden from coordinators via `get_actions()` — otherwise a coordinator with `change_application` could reach the same broad action Administration uses.
+
+### `can_view_health_info` — Option B (approved)
+
+All three Coordinator groups carry `can_view_health_info`, not just Preschool. Health visibility never means "every child" — `HealthInfoInline` is itself band-scoped via `GradeBandScopedInline`, so a Preschool coordinator with the permission still only ever sees `HealthInfo` rows for Preschool-band applications. Revisit if this proves too broad in practice; nothing about the mechanism makes narrowing it later (e.g. to Preschool only) more than a one-line Group change.
+
+### The 3 Groups (migration `0019`)
+
+`Preschool Coordinator` / `Primary Coordinator` / `JHS Coordinator` — identical permission bundle on all three (what differs per coordinator is their `StaffProfile.grade_band`, not their Group):
+
+- `view_application`, `change_application`
+- `view_document`, `change_document`
+- `view_note`, `add_note`, `change_note` (no `delete_note`)
+- `view_emergencycontact`
+- `view_student`, `view_family`, `view_guardian`
+- `can_view_health_info`
+
+Deliberately excluded: `can_decide`, `can_send_bulk_email`, `add_application`/`delete_application`, any `delete_*`. Same `create_permissions`-guard pattern as `0017_administration_group`, so it works against a fresh `migrate` too.
+
+### A real gap this surfaced, not fixed here
+
+Testing `Administration`'s bypass exposed that the `Administration` group (b5) grants only its three named custom permissions (`can_decide`, `can_view_health_info`, `can_send_bulk_email`) — **no** base Django model permissions (`view_application`/`change_application`/etc.). `GradeBandScopedAdmin`'s own scoping bypass for an Administration member works correctly in isolation (confirmed directly in tests), but a real **non-superuser** Administration member would still be blocked by Django's own `has_change_permission` for lack of `change_application` and the rest — every Administration user so far (you) has also been a superuser, so this has never actually been hit. Flagged for a decision: either grant `Administration` standard model CRUD too, or formalize "Administration membership implies superuser" as the actual rule.
+
+### `manage.py audit_staff_roles`
+
+Flags three drift scenarios between `StaffProfile.grade_band` (scope) and Group membership (permissions): a Coordinator-group member with no matching band (fails closed, sees nothing); a `grade_band` set with no matching Group (has scope, no permissions to act on it); membership in `Administration` *and* a Coordinator group at once (Administration wins, the coordinator scope is silently ignored). Not wired into `manage.py check` or CI — it hits the DB and role drift isn't deploy-blocking, just something a human should run after a roster change.
+
 ## Admissions-specific roles (built on the shared RBAC pattern)
 
-- Admissions Officer, Reviewer, Admin — Django Groups scoped to the `admissions` app's models only.
-- `admissions.can_view_health_info` (Phase 5) — ungranted by default; who gets it is a decision for the user, not auto-assigned.
-- `admissions.can_send_bulk_email` (Phase 6) — ungranted by default, same reasoning.
+- `admissions.can_decide` (Phase 3), `admissions.can_view_health_info` (Phase 5), `admissions.can_send_bulk_email` (Phase 6) — all ungranted by default; bundled by the `Administration` Group (b5) for the overall admin.
+- `Preschool Coordinator` / `Primary Coordinator` / `JHS Coordinator` (Phase 6.2) — grade-band-scoped staff roles; see that section above for the full model.
 
 ## Open questions to resolve before/during Phase 1
 

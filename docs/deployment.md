@@ -12,7 +12,7 @@ Read `shared-stack.md` first for the overall architecture this assumes (Supabase
 
 - Service `admissions` in `europe-west1`, project `tcs-os`, serving revision `admissions-00019-qm7`. Custom domain resolves and serves over HTTPS — steps 1–4, 7, 11, 12 are effectively done (the CNAME to `ghs.googlehosted.com` is in place and routing).
 - Secret Manager holds `admissions-secret-key`, `admissions-database-url`, `admissions-supabase-key`, `admissions-resend-key`, `admissions-turnstile-secret`, `admissions-bulk-email-secret`. IAM bound to the `admissions-runner@tcs-os.iam.gserviceaccount.com` runtime SA (step 3).
-- `admissions-migrate` Cloud Run Job exists and has been run through migration `0014` (step 5). `admissions-configure-storage` job pattern from step 5b has been run against the real bucket. **Migration `0015` (TransactionalEmail, b2) is committed but not yet applied to prod — run the migrate job on the next deploy.**
+- `admissions-migrate` Cloud Run Job exists and has been run through migration `0014` (step 5). `admissions-configure-storage` job pattern from step 5b has been run against the real bucket. **Migrations `0015` (TransactionalEmail, b2) through `0019` (Coordinator Groups, Phase 6.2) are committed but not yet applied to prod — run the migrate job on the next deploy. All five are additive/safe; `0017` and `0019` are idempotent data migrations.**
 - `admissions-bulk-email` Cloud Tasks queue exists (`--max-dispatches-per-second=5`, `--max-attempts=3`) — step 5c done.
 - Resend: **both** sending domains verified — `tcsch.edu.gh` (step 6) and `updates.tcsch.edu.gh` (step 6b), the latter confirmed `"status": "verified"` via a real `GET /domains` call on 2026-08-28. A real Phase 6 campaign has been sent in production.
 - All step-7 env vars are set on the live service, including Phase 6's six (`GCP_PROJECT_ID` etc.) and the 2026-09-02 CORS pair (`CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGIN_REGEXES`).
@@ -21,9 +21,11 @@ Read `shared-stack.md` first for the overall architecture this assumes (Supabase
 **Genuinely still outstanding:**
 
 - **b2 — transactional-email async path (2026-09-03)**: not yet deployed. Needs (a) `gcloud run jobs execute admissions-migrate` for migration `0015`, (b) the `admissions-transactional-email` Cloud Tasks queue created (step 5d), and (c) the two new env vars set on the service (`CLOUD_TASKS_TRANSACTIONAL_QUEUE`, `CLOUD_TASKS_TRANSACTIONAL_MAX_ATTEMPTS` — step 7). Until then, or if any of that is missing, the app sends these emails inline exactly as before (the fast-fail fallback), so a partial deploy is safe.
+- **b4 / b5 (2026-09-03)**: not yet deployed. The same `admissions-migrate` run picks up migration `0016` (Lead `utm_source`/`utm_medium`/`utm_campaign` — additive columns, all default `""`) and `0017` (creates the `Administration` Group — idempotent data migration). **No env-var, queue, or image-config changes** beyond the ordinary build+deploy. Nothing breaks if the code deploys before the migrate job runs: the serializer only writes the UTM columns, so writes would 500 until the columns exist — so run the migrate job as part of (not after) the deploy, same as always.
+- **Phase 6.2 — grade-band coordinator RBAC (2026-09-04)**: not yet deployed. Migration `0018` creates `StaffProfile` (additive table); `0019` creates the 3 Coordinator Groups (idempotent). **No env-var, queue, or image-config changes.** Post-deploy: create the 3 coordinator users in `/admin/`, mark Staff status, add each to their Group, and set `StaffProfile.grade_band` — all on the same User edit page (see step 8's onboarding note below). Run `manage.py audit_staff_roles` after any roster change to catch a Group/band mismatch.
 - **Step 13 — Cloudflare rate-limit rule on `/api/admissions/*`** — never applied. Dashboard config; needs the DNS record proxied (orange cloud) first.
 - **Step 8 — staff admin login**: at least one superuser exists (real campaigns have been sent from admin), but whether it was created via the step-8 job or ad hoc isn't recorded here.
-- **`admissions.can_send_bulk_email` / `admissions.can_view_health_info`** grants — still ungranted to any Group by design; a deliberate decision for whoever owns go-live.
+- **`admissions.can_send_bulk_email` / `admissions.can_view_health_info` / `admissions.can_decide`** grants — the `Administration` Group now exists (migration `0017`, b5) and bundles all three, but **no users are in it yet**. Adding the right staff member(s) to `Administration` is a deliberate decision for whoever owns go-live. See admin-setup notes at step 8.
 - **Step 9 / step 10** verification checklists — the `*.run.app` direct-hit check and the production-origin Supabase upload check — worth running once as documented, not known to have been done formally.
 
 ---
@@ -318,6 +320,16 @@ gcloud secrets delete admissions-superuser-password
 ```
 Change the password from inside `/admin/` once logged in, same as any first-login flow.
 
+### Onboarding other staff — `Administration` and the 3 Coordinator groups
+
+Migration `0017` (b5) creates a Django Group named **`Administration`** that bundles the three admissions permissions which are *not* granted automatically: `can_decide` (record Decisions, generate/reset Offers), `can_view_health_info` (see the health/wellbeing section on an Application), `can_send_bulk_email` (actually trigger a bulk/marketing send — drafting and Preview don't need it).
+
+To give a senior staff member the full admissions toolset: create their user in `/admin/`, mark them **Staff status**, and add them to the **`Administration`** group. That's the whole flow — no need to hunt down individual permission checkboxes. **Note:** `Administration` alone does not grant base Django model permissions (`view`/`change_application`, etc.) — only its 3 named custom ones (see `02-stack-and-schema.md`'s Phase 6.2 section, "A real gap this surfaced"). Every Administration user so far has also been made a superuser, which sidesteps this; if you add a non-superuser Administration member, they'll also need base model permissions granted some other way.
+
+Migration `0019` (Phase 6.2) creates three grade-band Coordinator groups — **`Preschool Coordinator`**, **`Primary Coordinator`**, **`JHS Coordinator`** — each pre-loaded with the (identical) permission bundle a coordinator needs: view/manage Applications and Documents in their band, add/edit Notes, view Student/Family/Guardian, and `can_view_health_info`. To onboard a coordinator: create their user, mark **Staff status**, add them to the matching Coordinator group, **and** set their **`grade_band`** on the `StaffProfile` inline on the same User edit page — the group grants the permissions, the `grade_band` field is what actually scopes what they see, and both need setting. Run `python manage.py audit_staff_roles` after onboarding (or any roster change) to catch a mismatch between the two.
+
+Nobody is in `Administration` or any Coordinator group by default — populating them is a deliberate go-live decision.
+
 ## 9. Verify before touching DNS
 
 Hit the raw Cloud Run URL directly first — this confirms the service itself works before any DNS/Cloudflare layer is in the picture:
@@ -390,5 +402,5 @@ The free Cloudflare plan allows exactly **one** rate limiting rule per zone — 
 ## After this works
 
 - Redeploying later is just steps 4 and 7 again (rebuild, push, `gcloud run deploy`) — plus step 5's migrate job if the new code has migrations, and step 5b's storage-config job if upload limits changed. Note: pass env-var flags **only** for vars you intend to change, and prefer `--update-env-vars` over `--set-env-vars` so the deploy doesn't wipe the ~20 vars it omits (the 2026-09-02 CORS deploy used `--update-env-vars='^##^KEY=a,b##KEY2=...'`). Reusing this doc's full step-7 command verbatim would overwrite real values with its placeholders (`SUPABASE_URL=https://your-project.supabase.co`, `TURNSTILE_SITE_KEY=PASTE_...`).
-- Before using Phase 6's bulk email for real: `admissions.can_send_bulk_email` needs to be granted to whichever staff member(s) should actually be able to trigger a send — not automatic, same deliberate-grant pattern as `can_view_health_info`. (Sending-domain verification — step 6b — is already done.)
+- Before using Phase 6's bulk email for real: `admissions.can_send_bulk_email` needs to be granted to whichever staff member(s) should actually be able to trigger a send — not automatic. Since b5 the simplest path is adding them to the **`Administration`** group (step 8's onboarding note), which carries this plus `can_decide` and `can_view_health_info`. (Sending-domain verification — step 6b — is already done.)
 - The Lead-capture widgets (Phase 6, 2026-09-01) on the marketing site: the production Turnstile widget's allowed-domains list already includes `tcsch.edu.gh`, `www.tcsch.edu.gh`, and `tcsch.vercel.app`, verified by a real production submission on 2026-09-03 — see **Current deployment state** above. Add any further preview hostnames to the same "TCS OS" widget as they come up.

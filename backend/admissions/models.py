@@ -36,6 +36,19 @@ STUDENT_ID_CLASSIFICATION = {
     "Grade 9": "04",
 }
 
+# Grade-band coordinator scoping (Phase 6.2) — derived from
+# STUDENT_ID_CLASSIFICATION's own codes so the two can never drift apart:
+# codes 01+02 (Preschool/KG) collapse into "preschool", 03 -> "primary",
+# 04 -> "jhs". Bands are disjoint by construction (the codes are). A grade
+# with no classification code (SHS, or a parent's free-text "Other" entry)
+# belongs to no band — see StaffProfile and admissions/access.py, which is
+# what actually reads this to scope an admin queryset.
+GRADE_BANDS = {
+    "preschool": frozenset(g for g, c in STUDENT_ID_CLASSIFICATION.items() if c in ("01", "02")),
+    "primary": frozenset(g for g, c in STUDENT_ID_CLASSIFICATION.items() if c == "03"),
+    "jhs": frozenset(g for g, c in STUDENT_ID_CLASSIFICATION.items() if c == "04"),
+}
+
 
 class ReferenceCounter(models.Model):
     """Backs the sequential portion of every human-readable reference number
@@ -352,6 +365,43 @@ class Application(models.Model):
             if self.stage == "enrolled":
                 _assign_student_id_if_needed(self)
 
+    def move_to_document_review(self):
+        """Phase 6.2 — the ONE write a grade-band coordinator can trigger
+        directly (see admin.py's ApplicationAdmin.move_to_document_review
+        action). Deliberately narrower than the plain `self.stage = "..."`
+        pattern used elsewhere in this file: `save()`'s own gate
+        (_requirement_met_for_stage) only blocks entering GATED_STAGES
+        ("offer"/"enrolled") — nothing in the model stops "document_review"
+        from being set from ANY prior stage, including a terminal one
+        (rejected, enrolled, offer_declined). That's fine for the existing
+        admin-only `mark_as_document_review` bulk action (Administration is
+        trusted with that), but not for a coordinator's one narrow grant.
+
+        So this method adds its own precondition — current stage must be
+        "inquiry" or "application" — and re-validates it under
+        select_for_update() at write time, not just when the admin action's
+        queryset was first built. That closes the gap between "the row
+        looked eligible when the changelist was rendered" and "the row is
+        actually being written": a double-click, two coordinators racing the
+        same row, or someone else moving it on in another tab all resolve to
+        exactly one write, or a clean ValidationError, never a silent
+        no-op and never two Document Review transitions for the same row.
+
+        Goes through the real save() (never Application.objects.filter(...)
+        .update()), so application_reference assignment and every other
+        save()-time side effect still fire exactly as they would for any
+        other stage change."""
+        with transaction.atomic():
+            locked = Application.objects.select_for_update().get(pk=self.pk)
+            if locked.stage not in ("inquiry", "application"):
+                raise ValidationError(
+                    f"Cannot move to Document Review: currently at "
+                    f"'{locked.get_stage_display()}', not Inquiry or Application."
+                )
+            locked.stage = "document_review"
+            locked.save()
+            return locked
+
 
 class Decision(models.Model):
     """Records whether an Application was accepted, waitlisted, or rejected.
@@ -661,6 +711,18 @@ class Lead(models.Model):
         help_text="Genuine opt-in only — defaults False even if a form omits the field.",
     )
 
+    # Raw campaign attribution lifted from the marketing-site URL
+    # (?utm_source=…&utm_medium=…&utm_campaign=…) by the form's JS and passed
+    # straight through in the POST body. Untrusted free text — deliberately
+    # distinct from `source` above, which the server sets and controls. Flat
+    # strings on purpose: the normalised Campaign / LeadSource / Activity shape
+    # is a logged "someday" item (see docs/admissions/03-build-order.md), not
+    # this. Truncated to 200 chars in the serializer so a junk-length UTM value
+    # can never 400 away a real lead.
+    utm_source = models.CharField(max_length=200, blank=True, default="")
+    utm_medium = models.CharField(max_length=200, blank=True, default="")
+    utm_campaign = models.CharField(max_length=200, blank=True, default="")
+
     # Same pattern as Guardian.bulk_email_* — see that model. Generated
     # eagerly for every Lead so the unsubscribe link in a bulk email is
     # always valid.
@@ -877,3 +939,43 @@ class TransactionalEmail(models.Model):
 
     def __str__(self):
         return f"{self.get_kind_display()} → {self.to_email} ({self.get_status_display()})"
+
+
+class StaffProfile(models.Model):
+    """Phase 6.2 — the one place a grade-band coordinator's *scope* lives.
+    OneToOne onto the stock `auth.User` (this project uses Django's default
+    user model — nowhere else to hang admissions-specific staff data).
+
+    `grade_band` is authoritative for filtering: admissions/access.py's
+    scoped_grades_for() reads THIS field, never group membership, to decide
+    what a user's admin queries return. The matching Coordinator Group (see
+    migration 0019_coordinator_groups) is a separate, deliberately redundant
+    carrier for the *permissions* (view/change Application, manage Document,
+    add/change Note, can_view_health_info) that go with that scope. Keeping
+    the two in sync — a user in "Primary Coordinator" also having
+    grade_band="primary" — is a manual admin responsibility, not a DB
+    constraint (someone mid-onboarding legitimately has one set before the
+    other), checked by `manage.py audit_staff_roles`.
+
+    Blank grade_band means "unscoped" — the value every Administration
+    member and superuser effectively has, since scoped_grades_for() never
+    even reads this field for them."""
+
+    GRADE_BAND_CHOICES = [
+        ("preschool", "Preschool coordinator (Pre Nursery – Kindergarten 2)"),
+        ("primary", "Primary coordinator (Grade 1 – 6)"),
+        ("jhs", "JHS coordinator (Grade 7 – 9)"),
+    ]
+
+    user = models.OneToOneField("auth.User", on_delete=models.CASCADE, related_name="staff_profile")
+    grade_band = models.CharField(
+        max_length=20, choices=GRADE_BAND_CHOICES, blank=True, default="",
+        help_text="Scopes this user's admin view to one grade band. Leave blank for "
+        "unscoped staff (Administration members and superusers ignore this field).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        band_label = self.get_grade_band_display() if self.grade_band else "unscoped"
+        return f"{self.user.get_username()} — {band_label}"

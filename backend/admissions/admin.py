@@ -3,6 +3,8 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib import admin, messages
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, Q
@@ -11,14 +13,73 @@ from django.utils import timezone
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin, StackedInline, TabularInline
 
-from . import bulk_email, emails, storage
+from . import access, bulk_email, emails, storage
 from .models import (
     Application, ApplicationDraft, Campus, Capacity, Decision, Document, EmailCampaign,
     EmailCampaignRecipient, EmergencyContact, Family, Guardian, HealthInfo, Lead, Note, Offer,
-    ReferenceCounter, Student, TransactionalEmail,
+    ReferenceCounter, StaffProfile, Student, TransactionalEmail,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class GradeBandScopedAdmin:
+    """Phase 6.2 — restricts a ModelAdmin's visible/editable rows to a grade-
+    band coordinator's band (see admissions/access.py), following the LIVE
+    `year_group_applied_for` value via `band_lookup` — never a stored
+    per-row assignment, so an application whose grade changes after
+    submission re-resolves to its new coordinator on the very next page
+    load, no backfill needed. A complete no-op for superusers,
+    Administration members, and any non-coordinator staff user
+    (scoped_grades_for returns None for all three — see that function)."""
+
+    band_lookup = "year_group_applied_for__in"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        grades = access.scoped_grades_for(request.user)
+        if grades is None:
+            return qs
+        return qs.filter(**{self.band_lookup: grades}).distinct()
+
+    def _in_scope(self, request, obj):
+        if obj is None:
+            return True
+        grades = access.scoped_grades_for(request.user)
+        if grades is None:
+            return True
+        return self.get_queryset(request).filter(pk=obj.pk).exists()
+
+    def has_view_permission(self, request, obj=None):
+        return super().has_view_permission(request, obj) and self._in_scope(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        return super().has_change_permission(request, obj) and self._in_scope(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return super().has_delete_permission(request, obj) and self._in_scope(request, obj)
+
+
+class GradeBandScopedInline:
+    """Same idea as GradeBandScopedAdmin, but for inlines (Document / Note /
+    EmergencyContact / HealthInfo on ApplicationAdmin) — only get_queryset is
+    overridden, as defense-in-depth. The `obj` argument InlineModelAdmin's
+    own has_*_permission methods receive is the PARENT object (the
+    Application), not this inline's own model instance, so it can't reuse
+    GradeBandScopedAdmin's object-level check the same way — and it doesn't
+    need to: what actually gates a coordinator off an out-of-band
+    application's Documents/Notes/etc. is ApplicationAdmin's own
+    has_view_permission/has_change_permission on the PARENT change page,
+    which a coordinator can never open for a row outside their band."""
+
+    band_lookup = "application__year_group_applied_for__in"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        grades = access.scoped_grades_for(request.user)
+        if grades is None:
+            return qs
+        return qs.filter(**{self.band_lookup: grades}).distinct()
 
 
 class GuardianInline(TabularInline):
@@ -32,13 +93,14 @@ class StudentInline(TabularInline):
 
 
 @admin.register(Family)
-class FamilyAdmin(ModelAdmin):
+class FamilyAdmin(GradeBandScopedAdmin, ModelAdmin):
+    band_lookup = "students__applications__year_group_applied_for__in"
     inlines = [GuardianInline, StudentInline]
     list_display = ("__str__", "referral_source", "created_at")
     list_filter = ("referral_source",)
 
 
-class DocumentInline(TabularInline):
+class DocumentInline(GradeBandScopedInline, TabularInline):
     model = Document
     extra = 0
     fields = ("document_type", "file_path", "file_link", "status", "uploaded_at")
@@ -58,7 +120,7 @@ class DocumentInline(TabularInline):
         return format_html('<a href="{}" target="_blank" rel="noopener">Open</a>', url)
 
 
-class NoteInline(TabularInline):
+class NoteInline(GradeBandScopedInline, TabularInline):
     model = Note
     extra = 0
     readonly_fields = ("author", "created_at")
@@ -107,15 +169,21 @@ class OfferInline(StackedInline):
         return self._can_decide(request)
 
 
-class EmergencyContactInline(TabularInline):
+class EmergencyContactInline(GradeBandScopedInline, TabularInline):
     model = EmergencyContact
     extra = 0
 
 
-class HealthInfoInline(StackedInline):
+class HealthInfoInline(GradeBandScopedInline, StackedInline):
     """Real health data about a child — gated behind admissions.can_view_health_info
     so staff without that permission don't see this section exists at all,
-    not just a read-only view of it. See HealthInfo's own docstring."""
+    not just a read-only view of it. See HealthInfo's own docstring. Since
+    Phase 6.2, all three Coordinator groups carry can_view_health_info (a
+    deliberate call — see docs/admissions/02-stack-and-schema.md), but
+    GradeBandScopedInline still keeps a coordinator's own get_queryset (and,
+    transitively, the parent ApplicationAdmin gate) to their own band — this
+    was never meant as "every coordinator sees every child's health data."
+    """
     model = HealthInfo
     extra = 0
     max_num = 1
@@ -137,7 +205,8 @@ class HealthInfoInline(StackedInline):
 
 
 @admin.register(Application)
-class ApplicationAdmin(ModelAdmin):
+class ApplicationAdmin(GradeBandScopedAdmin, ModelAdmin):
+    band_lookup = "year_group_applied_for__in"
     inlines = [DecisionInline, OfferInline, DocumentInline, EmergencyContactInline, HealthInfoInline, NoteInline]
     list_display = (
         "student", "campus", "year_group_applied_for", "academic_year", "month_of_enrollment",
@@ -147,18 +216,41 @@ class ApplicationAdmin(ModelAdmin):
     search_fields = ("student__full_name", "inquiry_reference", "application_reference")
     readonly_fields = ("inquiry_reference", "application_reference", "declaration_agreed_at", "declaration_ip_address")
     actions = [
-        "mark_as_application", "mark_as_document_review",
+        "mark_as_application", "mark_as_document_review", "move_to_document_review",
         "generate_offer", "reset_offer", "mark_as_enrolled",
     ]
+
+    def get_readonly_fields(self, request, obj=None):
+        """Phase 6.2 — a grade-band coordinator (scoped_grades_for returns a
+        frozenset, never None, for one) gets the WHOLE Application model
+        read-only. Their one write path is the move_to_document_review
+        action below, never an open field/dropdown — in particular this is
+        what stops a coordinator setting `stage` straight to
+        rejected/waitlisted/offer/enrolled, which change_application alone
+        (needed so their Document/Note inline saves work) would otherwise
+        allow, since save()'s own gate only blocks entering
+        offer/enrolled, not an arbitrary stage write."""
+        base = super().get_readonly_fields(request, obj)
+        if access.scoped_grades_for(request.user) is not None:
+            return [f.name for f in self.model._meta.fields if not f.primary_key]
+        return base
 
     def get_actions(self, request):
         """Hides (and, per Django admin's own dispatch, functionally blocks —
         response_action() looks the submitted action up in this same dict)
-        the can_decide-gated actions for anyone without that permission."""
+        the can_decide-gated actions for anyone without that permission, and
+        hides the unrestricted mark_as_* stage actions (any starting stage,
+        no precondition) from grade-band coordinators — their only
+        stage-changing action is the narrow, guarded move_to_document_review
+        below (Application.move_to_document_review(), see models.py)."""
         actions = super().get_actions(request)
         if not request.user.has_perm("admissions.can_decide"):
             actions.pop("generate_offer", None)
             actions.pop("reset_offer", None)
+        if access.scoped_grades_for(request.user) is not None:
+            actions.pop("mark_as_application", None)
+            actions.pop("mark_as_document_review", None)
+            actions.pop("mark_as_enrolled", None)
         return actions
 
     def save_formset(self, request, form, formset, change):
@@ -250,6 +342,36 @@ class ApplicationAdmin(ModelAdmin):
     def mark_as_document_review(self, request, queryset):
         self._bulk_set_stage(request, queryset, "document_review", "Document Review")
 
+    @admin.action(description="Move to Document Review (Inquiry/Application stage only)")
+    def move_to_document_review(self, request, queryset):
+        """Phase 6.2 — the narrow, coordinator-safe counterpart to
+        mark_as_document_review above: only ever accepts inquiry/application
+        as the starting stage (re-validated per-row, under a row lock, at
+        write time — see Application.move_to_document_review()), so it can't
+        be used to "advance" an already-past-document_review, rejected,
+        waitlisted, or enrolled application. `queryset` here is already
+        band-scoped for a coordinator (GradeBandScopedAdmin.get_queryset),
+        so an out-of-band pk was never a candidate in the first place — this
+        action only ever needs to worry about the STARTING STAGE, not the
+        band."""
+        succeeded = 0
+        skipped = 0
+        for application in queryset:
+            try:
+                application.move_to_document_review()
+                succeeded += 1
+            except ValidationError:
+                skipped += 1
+
+        self.message_user(request, f"{succeeded} application(s) moved to Document Review.")
+        if skipped:
+            self.message_user(
+                request,
+                f"{skipped} selected application(s) skipped — only Inquiry/Application-stage "
+                "rows can be moved to Document Review this way.",
+                level=messages.WARNING,
+            )
+
     @admin.action(description="Move selected to: Enrolled")
     def mark_as_enrolled(self, request, queryset):
         """The old 'only from Offer stage' pre-filter (Phase 3's own
@@ -312,7 +434,8 @@ class ApplicationAdmin(ModelAdmin):
 
 
 @admin.register(Student)
-class StudentAdmin(ModelAdmin):
+class StudentAdmin(GradeBandScopedAdmin, ModelAdmin):
+    band_lookup = "applications__year_group_applied_for__in"
     list_display = (
         "full_name", "family", "date_of_birth", "gender", "nationality",
         "current_grade", "current_school", "student_id",
@@ -337,7 +460,8 @@ class BulkEmailSubscribedFilter(admin.SimpleListFilter):
 
 
 @admin.register(Guardian)
-class GuardianAdmin(ModelAdmin):
+class GuardianAdmin(GradeBandScopedAdmin, ModelAdmin):
+    band_lookup = "family__students__applications__year_group_applied_for__in"
     list_display = ("full_name", "family", "relationship", "email", "phone", "town_city", "bulk_email_unsubscribed_at")
     list_filter = (BulkEmailSubscribedFilter,)
     search_fields = ("first_name", "surname", "email")
@@ -388,17 +512,26 @@ class LeadAdmin(ModelAdmin):
     to progress a prospect re-key them through the normal Inquiry form. See
     the Lead model docstring."""
     list_display = (
-        "name", "contact", "grade_interest", "source", "consent_to_marketing",
+        "name", "contact", "grade_interest", "source", "utm", "consent_to_marketing",
         "bulk_email_unsubscribed_at", "created_at",
     )
     list_filter = ("source", "consent_to_marketing")
-    search_fields = ("name", "email", "phone")
-    readonly_fields = ("source", "bulk_email_unsubscribe_token", "bulk_email_unsubscribed_at", "created_at")
+    search_fields = ("name", "email", "phone", "utm_source", "utm_medium", "utm_campaign")
+    readonly_fields = (
+        "source", "utm_source", "utm_medium", "utm_campaign",
+        "bulk_email_unsubscribe_token", "bulk_email_unsubscribed_at", "created_at",
+    )
     ordering = ("-created_at",)
 
     @admin.display(description="Contact")
     def contact(self, obj):
         return obj.email or obj.phone or "—"
+
+    @admin.display(description="UTM (source / medium / campaign)")
+    def utm(self, obj):
+        if not (obj.utm_source or obj.utm_medium or obj.utm_campaign):
+            return "—"
+        return " / ".join(part or "·" for part in (obj.utm_source, obj.utm_medium, obj.utm_campaign))
 
     def has_add_permission(self, request):
         # Leads only ever arrive via the two public endpoints.
@@ -794,3 +927,24 @@ class TransactionalEmailAdmin(ModelAdmin):
             return
 
         self.message_user(request, f"Re-queued {len(ids)} email(s) for delivery.")
+
+
+class StaffProfileInline(StackedInline):
+    """Phase 6.2 — grade-band assignment lives right next to Group membership
+    on the same User edit page, so onboarding a coordinator is one screen:
+    Staff status + Coordinator group (permissions) + grade_band (scope)."""
+    model = StaffProfile
+    can_delete = False
+    max_num = 1
+    fields = ("grade_band",)
+
+
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    """Re-registered only to add StaffProfileInline — everything else
+    (list_display, fieldsets, the password-change flow) is Django's own
+    UserAdmin, unchanged."""
+    inlines = [StaffProfileInline]
