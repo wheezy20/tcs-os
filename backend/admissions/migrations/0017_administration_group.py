@@ -1,27 +1,37 @@
-# b5 — the "Administration" role. A single Django Group bundling the three
-# deliberately-not-auto-granted custom admissions permissions, so onboarding a
-# senior staff member is "add them to Administration" rather than ticking
-# individual boxes. See docs/deployment.md's admin-setup notes.
+# b5 — the "Administration" role. A single Django Group so onboarding a senior
+# staff member is "add them to Administration" rather than ticking individual
+# boxes. See docs/deployment.md's admin-setup notes.
 #
-# Updated 2026-09-05 (Phase 6.2 follow-up): also grants explicit base
-# view/change permissions on every admissions model a coordinator or staff
-# member might touch. Before this, "Administration" carried only the 3 custom
-# permissions below — a non-superuser member would still be blocked by
-# Django's own has_view_permission/has_change_permission for lack of e.g.
-# view_application. Every real Administration user so far has also been a
-# superuser, which silently masked this. From here on, "Administration" means
-# full functional access *within admissions* on its own — not "requires
-# Django-wide superuser" — so a future non-superuser senior hire works
-# correctly. Deliberately still NOT add_*/delete_* on this list (see
-# docs/admissions/02-stack-and-schema.md's Phase 6.2 section for the two
-# known, flagged consequences of that: a non-superuser Administration member
-# can't add a Note via the inline, or see the EmailCampaignRecipient audit
-# inline, without also being a superuser).
+# Updated 2026-09-05 (Phase 6.2 follow-up), then widened 2026-09-09: grants
+# every permission a non-superuser Administration member needs for full
+# functional access *within admissions* — view/add/change on the core models,
+# view on the read-only/audit surfaces. Before this it carried only the 3
+# custom permissions, so a non-superuser member was blocked by Django's own
+# has_*_permission checks all over the admin (couldn't see an Application,
+# couldn't add a Note, couldn't see the bulk-send audit trail, ...). Every
+# real Administration user so far has also been a superuser, which silently
+# masked all of it. From here on "Administration" means full admissions
+# access on its own — NOT "requires Django-wide superuser".
+#
+# Deliberately NOT granted (documented so it's a decision, not an oversight):
+#   * every delete_* — row cleanup (duplicate guardian, spam Lead, junk draft
+#     campaign) stays a superuser task on purpose.
+#   * all auth.* (users, groups, permissions) — Administration runs
+#     admissions, it does not administer staff accounts. Creating a Django
+#     user / assigning groups / setting passwords stays a superuser task
+#     (see docs/deployment.md).
+#   * django plumbing (sessions, content types, admin log, StaffProfile —
+#     the last only reachable via the User admin, which needs auth.change_user).
+#
+# A few add_* below are inert because the relevant admin/inline hard-codes
+# has_add_permission (Offer, Lead) or gates it on a custom permission the
+# group already has (Decision -> can_decide, HealthInfo -> can_view_health_info).
+# Granted anyway so this list reads as a clean "all of admissions, minus
+# delete" rather than a bespoke subset that's harder to reason about.
 #
 # This migration was NOT yet applied anywhere but ephemeral test databases at
-# the time of this edit (see docs/deployment.md's "Current deployment state"
-# — 0017 was still listed as pending), so it's edited in place rather than
-# layered under a new migration number.
+# the time of these edits (docs/deployment.md still listed 0017 as pending),
+# so it's edited in place rather than layered under a new migration number.
 
 from django.db import migrations
 
@@ -29,19 +39,32 @@ GROUP_NAME = "Administration"
 
 CUSTOM_PERMISSION_CODENAMES = ("can_decide", "can_view_health_info", "can_send_bulk_email")
 
-# Base view/change Django permissions — deliberately not add_*/delete_* (see
-# the module docstring above). Every admissions model an Administration
-# member might reasonably need to see or edit day to day.
-CRUD_MODELS = (
+# view + add + change (never delete) — the models an Administration member
+# creates and edits in normal admissions work.
+CRU_MODELS = (
     "application", "student", "family", "guardian", "document", "note",
     "emergencycontact", "healthinfo", "decision", "offer", "lead",
     "emailcampaign", "capacity", "campus",
 )
-CRUD_PERMISSION_CODENAMES = tuple(
-    f"{action}_{model}" for model in CRUD_MODELS for action in ("view", "change")
+
+# view only — read-only / audit / support surfaces. Each of these admin pages
+# (and, for TransactionalEmail, its resend_failed action) is invisible
+# without the view permission; none is ever hand-created or hand-edited.
+VIEW_ONLY_MODELS = (
+    "applicationdraft", "referencecounter", "transactionalemail", "emailcampaignrecipient",
 )
 
-PERMISSION_CODENAMES = CUSTOM_PERMISSION_CODENAMES + CRUD_PERMISSION_CODENAMES
+
+def _build_codenames():
+    codenames = set(CUSTOM_PERMISSION_CODENAMES)
+    for model in CRU_MODELS:
+        codenames |= {f"view_{model}", f"add_{model}", f"change_{model}"}
+    for model in VIEW_ONLY_MODELS:
+        codenames.add(f"view_{model}")
+    return codenames
+
+
+PERMISSION_CODENAMES = _build_codenames()
 
 
 def _sync_admissions_permissions(apps):

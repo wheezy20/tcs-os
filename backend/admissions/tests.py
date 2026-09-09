@@ -647,17 +647,22 @@ class AdministrationGroupTests(TestCase):
 
 
 class AdministrationCrudPermissionTests(TestCase):
-    """2026-09-05 — Administration now carries explicit base view/change
-    permissions on every admissions model, not just its 3 custom ones (see
-    migration 0017's updated PERMISSION_CODENAMES). This is the direct,
-    exhaustive proof of that grant — and, just as importantly, proof that
-    add_*/delete_* were deliberately NOT included (see the migration's own
-    docstring for the two known, accepted consequences of that boundary)."""
+    """Administration's permission set (migration 0017). 2026-09-09: widened
+    from view/change-only to view+add+change on the core models (so a
+    non-superuser member can actually do end-to-end admissions work — add a
+    Note, create a campaign draft, set up a cycle's capacities, key in a
+    walk-in family), plus view on the read-only/audit surfaces. delete_* and
+    auth.* stay deliberately out — see the migration docstring."""
 
-    CRUD_MODELS = (
+    # view + add + change, no delete
+    CRU_MODELS = (
         "application", "student", "family", "guardian", "document", "note",
         "emergencycontact", "healthinfo", "decision", "offer", "lead",
         "emailcampaign", "capacity", "campus",
+    )
+    # view only
+    VIEW_ONLY_MODELS = (
+        "applicationdraft", "referencecounter", "transactionalemail", "emailcampaignrecipient",
     )
 
     @classmethod
@@ -669,27 +674,118 @@ class AdministrationCrudPermissionTests(TestCase):
         # has_perm() caches on the instance — re-fetch for a clean check.
         return User.objects.get(pk=self.user.pk)
 
-    def test_has_view_and_change_on_every_listed_model(self):
+    def test_has_view_add_change_on_every_core_model(self):
         user = self._refetch()
-        for model in self.CRUD_MODELS:
+        for model in self.CRU_MODELS:
             with self.subTest(model=model):
                 self.assertTrue(user.has_perm(f"admissions.view_{model}"))
+                self.assertTrue(user.has_perm(f"admissions.add_{model}"))
                 self.assertTrue(user.has_perm(f"admissions.change_{model}"))
 
-    def test_does_not_have_add_or_delete_on_any_listed_model(self):
-        """The deliberate boundary — "view/change", not full Django CRUD.
-        See migration 0017's docstring for the two known consequences."""
+    def test_has_view_only_on_the_readonly_surfaces(self):
         user = self._refetch()
-        for model in self.CRUD_MODELS:
+        for model in self.VIEW_ONLY_MODELS:
             with self.subTest(model=model):
+                self.assertTrue(user.has_perm(f"admissions.view_{model}"))
                 self.assertFalse(user.has_perm(f"admissions.add_{model}"))
+                self.assertFalse(user.has_perm(f"admissions.change_{model}"))
+
+    def test_has_no_delete_on_anything(self):
+        """The firm boundary — row cleanup stays a superuser task."""
+        user = self._refetch()
+        for model in self.CRU_MODELS + self.VIEW_ONLY_MODELS:
+            with self.subTest(model=model):
                 self.assertFalse(user.has_perm(f"admissions.delete_{model}"))
+
+    def test_has_no_auth_administration_permissions(self):
+        """Administration runs admissions; it does not administer staff
+        accounts (that stays superuser-only — see deployment.md)."""
+        user = self._refetch()
+        for codename in ("auth.add_user", "auth.change_user", "auth.delete_user",
+                         "auth.add_group", "auth.change_group", "auth.change_permission"):
+            with self.subTest(codename=codename):
+                self.assertFalse(user.has_perm(codename))
 
     def test_still_has_the_three_custom_permissions(self):
         user = self._refetch()
         self.assertTrue(user.has_perm("admissions.can_decide"))
         self.assertTrue(user.has_perm("admissions.can_view_health_info"))
         self.assertTrue(user.has_perm("admissions.can_send_bulk_email"))
+
+
+class AdministrationInlineAndActionAccessTests(TestCase):
+    """The functional proof, not just the raw perm bits: a genuine
+    non-superuser Administration member reaches the same inline add-rows,
+    audit inlines, standalone admins and actions a superuser does. Each
+    assertion here corresponds to a specific gap that the 2026-09-09
+    widening of migration 0017 closed."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin_user = User.objects.create_user("inline_admin", password="x", is_staff=True)
+        cls.admin_user.groups.add(Group.objects.get(name="Administration"))
+        cls.superuser = User.objects.create_superuser("inline_root", password="x")
+
+    def _req(self, user):
+        request = RequestFactory().get("/admin/")
+        request.user = user
+        return request
+
+    def _assert_parity(self, inline_or_admin, method_name, *extra, expect):
+        """method(request, *extra) matches superuser AND equals `expect` for
+        the Administration member. `extra` carries the parent obj that an
+        inline's has_add_permission requires as a positional arg (ModelAdmin's
+        takes only request; has_view_permission defaults obj to None)."""
+        method = getattr(inline_or_admin, method_name)
+        admin_result = method(self._req(self.admin_user), *extra)
+        su_result = method(self._req(self.superuser), *extra)
+        self.assertEqual(admin_result, su_result, f"{inline_or_admin}.{method_name} parity")
+        self.assertEqual(admin_result, expect, f"{inline_or_admin}.{method_name} value")
+
+    def test_inline_add_rows_are_available(self):
+        from .admin import (
+            DocumentInline, EmergencyContactInline, GuardianInline, NoteInline, StudentInline,
+        )
+        self._assert_parity(NoteInline(Application, admin.site), "has_add_permission", None, expect=True)
+        self._assert_parity(GuardianInline(Family, admin.site), "has_add_permission", None, expect=True)
+        self._assert_parity(StudentInline(Family, admin.site), "has_add_permission", None, expect=True)
+        self._assert_parity(DocumentInline(Application, admin.site), "has_add_permission", None, expect=True)
+        self._assert_parity(
+            EmergencyContactInline(Application, admin.site), "has_add_permission", None, expect=True
+        )
+
+    def test_bulk_send_audit_inline_is_visible(self):
+        from .admin import EmailCampaignRecipientInline
+        self._assert_parity(
+            EmailCampaignRecipientInline(EmailCampaign, admin.site), "has_view_permission", expect=True
+        )
+
+    def test_can_create_campaign_drafts_and_capacities(self):
+        from .admin import CapacityAdmin, EmailCampaignAdmin
+        from .models import Capacity
+        self._assert_parity(EmailCampaignAdmin(EmailCampaign, admin.site), "has_add_permission", expect=True)
+        self._assert_parity(CapacityAdmin(Capacity, admin.site), "has_add_permission", expect=True)
+
+    def test_readonly_support_admins_are_viewable_not_editable(self):
+        from .admin import ApplicationDraftAdmin, ReferenceCounterAdmin, TransactionalEmailAdmin
+        from .models import ApplicationDraft, ReferenceCounter
+
+        self._assert_parity(
+            TransactionalEmailAdmin(TransactionalEmail, admin.site), "has_view_permission", expect=True
+        )
+        self._assert_parity(
+            ApplicationDraftAdmin(ApplicationDraft, admin.site), "has_view_permission", expect=True
+        )
+        rc_admin = ReferenceCounterAdmin(ReferenceCounter, admin.site)
+        self._assert_parity(rc_admin, "has_view_permission", expect=True)
+        # ReferenceCounter is view-only for Administration on purpose
+        # ("never hand-edited in normal operation").
+        self.assertFalse(rc_admin.has_change_permission(self._req(self.admin_user)))
+
+    def test_transactional_email_resend_action_is_available(self):
+        from .admin import TransactionalEmailAdmin
+        actions = TransactionalEmailAdmin(TransactionalEmail, admin.site).get_actions(self._req(self.admin_user))
+        self.assertIn("resend_failed", actions)
 
 
 def _make_application(year_group, stage="inquiry", campus=None, academic_year="2026/2027"):

@@ -887,9 +887,19 @@ All three Coordinator groups carry `can_view_health_info`, not just Preschool. H
 
 Deliberately excluded: `can_decide`, `can_send_bulk_email`, `add_application`/`delete_application`, any `delete_*`. Same `create_permissions`-guard pattern as `0017_administration_group`, so it works against a fresh `migrate` too.
 
-### A real gap this surfaced, not fixed here
+### `Administration` = full admissions access without superuser (migration `0017`, widened 2026-09-09)
 
-Testing `Administration`'s bypass exposed that the `Administration` group (b5) grants only its three named custom permissions (`can_decide`, `can_view_health_info`, `can_send_bulk_email`) — **no** base Django model permissions (`view_application`/`change_application`/etc.). `GradeBandScopedAdmin`'s own scoping bypass for an Administration member works correctly in isolation (confirmed directly in tests), but a real **non-superuser** Administration member would still be blocked by Django's own `has_change_permission` for lack of `change_application` and the rest — every Administration user so far (you) has also been a superuser, so this has never actually been hit. Flagged for a decision: either grant `Administration` standard model CRUD too, or formalize "Administration membership implies superuser" as the actual rule.
+Testing Phase 6.2's bypass exposed that the `Administration` group (b5) originally carried only its three named custom permissions — no base Django model permissions — so a **non-superuser** member was blocked by Django's own `has_*_permission` checks all over the admin. Every Administration user so far had also been a superuser, which silently masked it. Resolved by widening `0017` to the full functional set:
+
+- **view + add + change** (never `delete`) on the 14 core models: `application`, `student`, `family`, `guardian`, `document`, `note`, `emergencycontact`, `healthinfo`, `decision`, `offer`, `lead`, `emailcampaign`, `capacity`, `campus`. A few `add_*` here are inert — the relevant admin/inline hard-codes `has_add_permission` (`Offer`, `Lead`) or gates it on a custom perm the group already has (`Decision`→`can_decide`, `HealthInfo`→`can_view_health_info`) — granted anyway so the list stays a clean "all of admissions minus delete".
+- **view only** on the four read-only / audit / support surfaces: `applicationdraft` (look up a stuck parent's draft), `referencecounter` (debugging), `transactionalemail` (delivery log + its `resend_failed` action), `emailcampaignrecipient` (the bulk-send audit inline — invisible without this, which is the specific case that first surfaced the gap).
+
+Deliberately still **not** granted, and documented so it's a decision rather than an oversight:
+- **every `delete_*`** — cleaning up a duplicate Guardian, a spam Lead, a junk draft campaign stays a superuser task.
+- **all `auth.*`** (users, groups, permissions) — Administration runs admissions, it does not administer staff accounts. Creating a Django user / assigning groups / resetting passwords stays superuser-only (see `deployment.md`).
+- Django plumbing (sessions, content types, admin log) and `StaffProfile` (only reachable via the User admin, which needs `auth.change_user`).
+
+So: adding a senior non-superuser hire to `Administration` now gives them a fully working admissions console on its own. The two things they still can't do are delete rows and manage other staff accounts — both by design.
 
 ### `manage.py audit_staff_roles`
 

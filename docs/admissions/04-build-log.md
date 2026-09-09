@@ -433,3 +433,18 @@ Full plan (StaffProfile design, the live queryset-filtering mechanism, the `can_
 **Not deployed this session.** Migrations `0018`+`0019` ride the same `admissions-migrate` job as `0015`–`0017`. No env-var/queue changes. Post-deploy: create the 3 coordinator users, Staff status, add each to their Group, set `StaffProfile.grade_band` — all on the same User admin page.
 
 Committed as (see git log — this session's Phase 6.2 commit).
+
+## 2026-09-09 — Administration group widened to full functional access (non-superuser)
+
+Follow-up to the gap flagged during Phase 6.2. Migration `0017` (still unapplied anywhere real, so edited in place) now grants `Administration` the full working set, not just its 3 custom permissions:
+
+- **view + add + change** (never `delete`) on the 14 core models (`application`, `student`, `family`, `guardian`, `document`, `note`, `emergencycontact`, `healthinfo`, `decision`, `offer`, `lead`, `emailcampaign`, `capacity`, `campus`).
+- **view only** on the 4 read-only/audit surfaces (`applicationdraft`, `referencecounter`, `transactionalemail`, `emailcampaignrecipient`).
+
+Audit of every registered admin + inline against a non-superuser Administration member found these gaps beyond the two the user flagged (`add_note`, `view_emailcampaignrecipient`): `add_guardian`/`add_student` (family-composition fixes via the Family inlines), `add_document`/`add_emergencycontact` (inline "add another" rows — e.g. a "required" document checklist entry, a 2nd emergency contact), `add_emailcampaign` (can't create a campaign draft at all without it — the entry point to the whole bulk-email workflow), `add_capacity` (can't set up a cycle's seat capacities), `view_applicationdraft` (stuck-parent support), `view_transactionalemail` (delivery-log check + the `resend_failed` action), `view_referencecounter`. All rolled into the "view+add+change / view-only" split above rather than a bespoke list.
+
+**Deliberately still excluded, documented in the migration + `02-stack-and-schema.md`:** every `delete_*` (row cleanup stays a superuser task) and all `auth.*` (staff-account administration stays superuser-only — which is also why the onboarding step itself needs a superuser).
+
+**Testing:** 7 new tests (`AdministrationCrudPermissionTests` rewritten + new `AdministrationInlineAndActionAccessTests`), `admissions/tests.py` **78 → 85, all green**. The new class is the functional proof — it instantiates the real inline/admin classes and asserts a non-superuser Administration member gets the same `has_add_permission`/`has_view_permission`/`get_actions` results a superuser does, plus that `ReferenceCounterAdmin` stays view-only. `check` + `makemigrations --check` clean; `0017` verified against a fresh DB (49 permissions, no `delete_*`, no `auth.*`).
+
+Follow-up commit on top of Phase 6.2's `e31dcdb` (neither pushed yet) — see git log.
