@@ -29,6 +29,6 @@ urlpatterns = [
     path("offer", TemplateView.as_view(template_name="public/offer.html", extra_context=_TURNSTILE_CONTEXT)),
 
     path("admin/", admin.site.urls),
-    path("api/admissions/", include("admissions.urls")),
-    # future modules: path("api/hr/", include("hr.urls")), etc.
+    path("api/admissions/", include("modules.admissions.urls")),
+    # future modules: path("api/hr/", include("modules.hr.urls")), etc.
 ]

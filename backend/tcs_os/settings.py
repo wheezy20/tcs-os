@@ -63,7 +63,8 @@ INSTALLED_APPS = [
     "corsheaders",
 
     # TCS OS modules — one Django app per module, sharing this one project
-    "admissions",
+    "modules.admissions",
+    "modules.hr",
 ]
 
 MIDDLEWARE = [
@@ -208,19 +209,19 @@ UNFOLD = {
     "SITE_SUBHEADER": "Admissions",
     "SITE_URL": "/",
     "SITE_LOGO": {
-        "light": "admissions.branding.logo_light",
-        "dark": "admissions.branding.logo_dark",
+        "light": "modules.admissions.branding.logo_light",
+        "dark": "modules.admissions.branding.logo_dark",
     },
     "SITE_ICON": {
-        "light": "admissions.branding.favicon",
-        "dark": "admissions.branding.favicon",
+        "light": "modules.admissions.branding.favicon",
+        "dark": "modules.admissions.branding.favicon",
     },
     "SITE_FAVICONS": [
         {
             "rel": "icon",
             "sizes": "32x32",
             "type": "image/png",
-            "href": "admissions.branding.favicon",
+            "href": "modules.admissions.branding.favicon",
         },
     ],
     "COLORS": {
@@ -307,7 +308,7 @@ FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://127.0.0.1:8000")
 # resolved against ADMISSIONS_ATTACHMENTS_DIR; a missing file is logged and
 # skipped, never blocking the send (see admissions/emails.py). Override
 # either via a comma-separated env var — no code change needed.
-ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "admissions" / "attachments"))
+ADMISSIONS_ATTACHMENTS_DIR = env("ADMISSIONS_ATTACHMENTS_DIR", default=str(BASE_DIR / "modules" / "admissions" / "attachments"))
 # The "Admissions Overview & Fees" PDF ships in the image (same file the
 # PDF-gate download uses — see PDF_GATE_ATTACHMENTS below), so the inquiry
 # parent-confirmation email carries it by default.
