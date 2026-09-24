@@ -17,9 +17,16 @@ from decimal import ROUND_HALF_UP, Decimal
 from unittest import mock
 
 from django.contrib.auth.models import Group, User
+from django.db import IntegrityError
 from django.test import TestCase
 
-from .models import Employee, EmployeePayConfig, PAYEBand, PayrollRun, PayrollRunLockedError, Payslip, StatutoryRate
+from . import documents as hr_documents
+from . import storage as hr_storage
+from .documents import DocumentGenerationError, DocumentLifecycleError
+from .models import (
+    ContractTemplate, Employee, EmployeeGeneratedDocument, EmployeePayConfig, PAYEBand, PayrollRun,
+    PayrollRunLockedError, Payslip, StatutoryRate,
+)
 from .payroll import PayrollConfigError, calculate_payslip
 
 STATUTORY_EFFECTIVE_FROM = date(2025, 1, 1)  # matches migration 0002's seeded rows
@@ -628,3 +635,337 @@ class PayslipImmutabilityOncePostedTests(TestCase):
                 payroll_run=self.run, employee=other_employee,
                 basic_salary=Decimal("3000.00"), gross_salary=Decimal("3000.00"), net_pay=Decimal("3000.00"),
             )
+
+
+# --- Session 7: employee-generated documents ---
+
+def _make_document_employee(employee_number="EMP-DOC-001", **overrides):
+    defaults = dict(
+        first_name="Ama", surname="Boateng", basic_salary=Decimal("4500.00"), employment_status="active",
+        position="Class Teacher", department="Primary", employment_type="Full-time",
+        start_date=date(2026, 1, 5), probation_end_date=date(2026, 7, 5), payment_method="Bank Transfer",
+    )
+    defaults.update(overrides)
+    return Employee.objects.create(employee_number=employee_number, **defaults)
+
+
+def _author_template(category, html_body="<h1>{{company_name}}</h1><p>Dear {{employee_name}}.</p>"):
+    template = ContractTemplate.objects.get(category=category)
+    template.html_body = html_body
+    template.save()
+    return template
+
+
+# hr_documents.upload_pdf_bytes hits a real Supabase Storage HTTP endpoint
+# — never called for real in tests. Every test that generates a document
+# patches modules.hr.storage.upload_pdf_bytes.
+def _fake_upload(employee, kind, pdf_bytes):
+    return f"{employee.pk}/{kind}/fake.pdf"
+
+
+class ContractTemplateSeedDataTests(TestCase):
+    """Confirms migration 0006 actually seeded all 4 kinds with blank
+    html_body — not a placeholder set, and not accidentally missing one."""
+
+    def test_all_four_kinds_seeded_blank(self):
+        rows = {t.category: t.html_body for t in ContractTemplate.objects.all()}
+        self.assertEqual(
+            set(rows.keys()),
+            {"Appointment Letter", "Probation Letter", "Contract-Teaching", "Contract-Non-Teaching"},
+        )
+        self.assertTrue(all(body == "" for body in rows.values()))
+
+
+class BuildMergeDataTests(TestCase):
+    def test_missing_required_field_raises(self):
+        employee = _make_document_employee(position="")  # blank position
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.build_merge_data(employee, "Appointment Letter")
+
+    def test_happy_path_includes_letterhead_and_employee_fields(self):
+        employee = _make_document_employee()
+        merge_data = hr_documents.build_merge_data(employee, "Appointment Letter")
+        self.assertEqual(merge_data["company_name"], "Treasures Christian School")
+        self.assertIn("<br>", merge_data["company_address"])  # \n converted for HTML rendering
+        self.assertEqual(merge_data["employee_name"], "Ama Boateng")
+        self.assertEqual(merge_data["position"], "Class Teacher")
+        self.assertEqual(merge_data["basic_salary"], "4500.00")
+
+    def test_probation_duration_computed_from_dates(self):
+        employee = _make_document_employee(start_date=date(2026, 1, 5), probation_end_date=date(2026, 7, 5))
+        merge_data = hr_documents.build_merge_data(employee, "Probation Letter")
+        self.assertEqual(merge_data["probation_duration_months"], 6)
+
+    def test_probation_duration_raises_without_dates_or_manual_override(self):
+        employee = _make_document_employee(probation_end_date=None)
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.build_merge_data(employee, "Probation Letter")
+
+    def test_probation_duration_accepts_manual_override(self):
+        employee = _make_document_employee(probation_end_date=None)
+        merge_data = hr_documents.build_merge_data(employee, "Probation Letter", manual_probation_months=3)
+        self.assertEqual(merge_data["probation_duration_months"], 3)
+
+
+class GenerateDocumentTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("hrstaff", password="pw12345")
+        self.employee = _make_document_employee()
+
+    def test_blank_template_raises(self):
+        # ContractTemplate rows are seeded blank by migration 0006 — don't author one here.
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+    def test_contract_kind_without_matching_variant_raises(self):
+        _author_template("Contract-Teaching")
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.generate_document(self.employee, "Contract-Teaching", self.user, contract_variant=None)
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.generate_document(
+                self.employee, "Contract-Teaching", self.user, contract_variant="Non-Teaching",
+            )
+
+    def test_happy_path_creates_draft_with_real_pdf(self):
+        _author_template("Appointment Letter")
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        self.assertEqual(document.status, "Draft")
+        self.assertEqual(document.version, 1)
+        self.assertEqual(document.created_by, self.user)
+        self.assertTrue(document.storage_path)
+        self.assertIn("company_name", document.merge_data)
+
+    def test_repeated_generation_increments_version(self):
+        _author_template("Appointment Letter")
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            first = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+            second = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        self.assertEqual(first.version, 1)
+        self.assertEqual(second.version, 2)
+
+    def test_db_enforces_unique_version_per_employee_kind(self):
+        """The UniqueConstraint on (employee, document_kind, version) —
+        the real backstop for the narrow race a code-reviewer pass
+        flagged in generate_document()'s version-number computation
+        (select_for_update() can't lock a row that doesn't exist yet, on
+        a first-ever generation). Confirmed at the DB level directly,
+        bypassing generate_document()'s own logic, same style as the
+        Issued/Superseded partial-constraint test above."""
+        _author_template("Appointment Letter")
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        with self.assertRaises(IntegrityError):
+            EmployeeGeneratedDocument.objects.create(
+                employee=self.employee, document_kind="Appointment Letter", version=1,
+                status="Draft", storage_path="dup", merge_data={}, created_by=self.user,
+            )
+
+    def test_concurrent_generation_race_is_caught_as_a_clean_error(self):
+        """Simulates the race directly: forces the version-uniqueness
+        constraint to fire from inside generate_document() itself (not
+        just a raw model .create()), confirming the IntegrityError is
+        caught and re-raised as DocumentGenerationError rather than
+        surfacing as an unhandled 500."""
+        _author_template("Appointment Letter")
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+        # Force the "next version" computation to collide with the one
+        # that already exists, standing in for two concurrent callers
+        # both computing next_version=2 before either commits.
+        with mock.patch(
+            "modules.hr.models.EmployeeGeneratedDocument.objects.select_for_update",
+        ) as mocked_lock:
+            mocked_lock.return_value.filter.return_value.order_by.return_value.values_list.return_value.first.return_value = 0
+            with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+                with self.assertRaises(DocumentGenerationError):
+                    hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+    def test_render_document_pdf_produces_a_real_pdf(self):
+        pdf_bytes = hr_documents.render_document_pdf(
+            "<h1>{{company_name}}</h1>", {"company_name": "Treasures Christian School"},
+        )
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+
+
+class DocumentLifecycleTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("hrstaff", password="pw12345")
+        self.employee = _make_document_employee()
+        _author_template("Appointment Letter")
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            self.document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+    def test_issue_promotes_draft_to_issued(self):
+        hr_documents.issue_document(self.document, self.user)
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.status, "Issued")
+        self.assertEqual(self.document.issued_by, self.user)
+        self.assertIsNotNone(self.document.issued_at)
+
+    def test_issuing_a_new_version_supersedes_the_old_issued_one(self):
+        hr_documents.issue_document(self.document, self.user)
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            second = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        hr_documents.issue_document(second, self.user)
+
+        self.document.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(self.document.status, "Superseded")
+        self.assertIsNotNone(self.document.superseded_at)
+        self.assertEqual(second.status, "Issued")
+
+    def test_cannot_issue_a_non_draft_document(self):
+        hr_documents.issue_document(self.document, self.user)
+        with self.assertRaises(DocumentLifecycleError):
+            hr_documents.issue_document(self.document, self.user)
+
+    def test_discard_deletes_a_draft_row(self):
+        pk = self.document.pk
+        hr_documents.discard_document(self.document)
+        self.assertFalse(EmployeeGeneratedDocument.objects.filter(pk=pk).exists())
+
+    def test_cannot_discard_a_non_draft_document(self):
+        hr_documents.issue_document(self.document, self.user)
+        with self.assertRaises(DocumentLifecycleError):
+            hr_documents.discard_document(self.document)
+
+    def test_record_acceptance_only_from_issued(self):
+        with self.assertRaises(DocumentLifecycleError):
+            hr_documents.record_acceptance(self.document, "Ama Boateng")
+
+        hr_documents.issue_document(self.document, self.user)
+        hr_documents.record_acceptance(self.document, "Ama Boateng")
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.acceptance_signature_name, "Ama Boateng")
+        self.assertIsNotNone(self.document.accepted_at)
+
+    def test_record_acceptance_requires_a_signature_name(self):
+        hr_documents.issue_document(self.document, self.user)
+        with self.assertRaises(DocumentGenerationError):
+            hr_documents.record_acceptance(self.document, "   ")
+
+    def test_db_enforces_at_most_one_issued_per_employee_kind(self):
+        """The partial unique constraint, not just issue_document()'s own
+        ordering — a direct attempt to force two Issued rows must fail at
+        the database level even bypassing the lifecycle function."""
+        hr_documents.issue_document(self.document, self.user)
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            second = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        second.status = "Issued"
+        with self.assertRaises(IntegrityError):
+            second.save()
+
+
+class EmployeeDetailAndDocumentViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("hrstaff", password="pw12345")
+        self.user.groups.add(Group.objects.get(name="Payroll Processor"))
+        self.nobody = User.objects.create_user("plain", password="pw12345")
+        self.employee = _make_document_employee()
+        _author_template("Appointment Letter")
+        _author_template(
+            "Contract-Teaching", "<h1>{{company_name}}</h1><p>{{employee_name}}, {{position}}.</p>",
+        )
+        self.client.login(username="hrstaff", password="pw12345")
+
+    def test_detail_view_requires_permission(self):
+        self.client.logout()
+        self.client.login(username="plain", password="pw12345")
+        response = self.client.get(f"/hr/employees/{self.employee.pk}/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_detail_view_shows_employee_and_empty_document_list(self):
+        response = self.client.get(f"/hr/employees/{self.employee.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ama Boateng")
+        self.assertContains(response, "No documents generated yet.")
+
+    def test_generate_view_creates_document_and_redirects(self):
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            response = self.client.post(
+                f"/hr/employees/{self.employee.pk}/documents/generate/",
+                {"document_kind": "Appointment Letter"},
+            )
+        self.assertRedirects(response, f"/hr/employees/{self.employee.pk}/")
+        self.assertEqual(
+            EmployeeGeneratedDocument.objects.filter(employee=self.employee, document_kind="Appointment Letter").count(),
+            1,
+        )
+
+    def test_generate_view_contract_requires_variant_and_reports_error(self):
+        response = self.client.post(
+            f"/hr/employees/{self.employee.pk}/documents/generate/",
+            {"document_kind": "Contract-Teaching"},  # no contract_variant
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered, not redirected
+        self.assertIn("error", response.context)
+
+    def test_generate_view_blank_template_reports_error_not_500(self):
+        response = self.client.post(
+            f"/hr/employees/{self.employee.pk}/documents/generate/",
+            {"document_kind": "Probation Letter"},  # never authored in this test's setUp
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("error", response.context)
+
+    def test_issue_discard_and_accept_flow(self):
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+        response = self.client.post(f"/hr/documents/{document.pk}/issue/")
+        self.assertRedirects(response, f"/hr/employees/{self.employee.pk}/")
+        document.refresh_from_db()
+        self.assertEqual(document.status, "Issued")
+
+        response = self.client.post(
+            f"/hr/documents/{document.pk}/accept/", {"signature_name": "Ama Boateng"},
+        )
+        self.assertRedirects(response, f"/hr/employees/{self.employee.pk}/")
+        document.refresh_from_db()
+        self.assertEqual(document.acceptance_signature_name, "Ama Boateng")
+
+        # A second, still-Draft document can be discarded.
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            draft = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        response = self.client.post(f"/hr/documents/{draft.pk}/discard/")
+        self.assertRedirects(response, f"/hr/employees/{self.employee.pk}/")
+        self.assertFalse(EmployeeGeneratedDocument.objects.filter(pk=draft.pk).exists())
+
+    def test_issue_on_already_issued_document_reports_error_not_500(self):
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+        hr_documents.issue_document(document, self.user)
+
+        response = self.client.post(f"/hr/documents/{document.pk}/issue/")
+        self.assertEqual(response.status_code, 200)  # re-rendered with an error, not a redirect
+        self.assertIn("error", response.context)
+
+    def test_view_link_redirects_to_a_signed_url(self):
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+        with mock.patch(
+            "modules.hr.storage.create_read_url", return_value="https://example.supabase.co/signed/x",
+        ) as mocked:
+            response = self.client.get(f"/hr/documents/{document.pk}/view/")
+        mocked.assert_called_once_with(document.storage_path)
+        self.assertRedirects(response, "https://example.supabase.co/signed/x", fetch_redirect_response=False)
+
+    def test_view_link_signing_failure_reports_error_not_500(self):
+        """Regression test: a code-reviewer pass flagged that
+        EmployeeGeneratedDocumentViewLinkView didn't catch HrStorageError
+        (a real signing failure — expired key, bucket misconfigured), the
+        one new view that skipped the clean-error treatment every other
+        view in this session got."""
+        with mock.patch("modules.hr.storage.upload_pdf_bytes", side_effect=_fake_upload):
+            document = hr_documents.generate_document(self.employee, "Appointment Letter", self.user)
+
+        with mock.patch(
+            "modules.hr.storage.create_read_url",
+            side_effect=hr_storage.HrStorageError("Supabase Storage sign request failed (401): bad key"),
+        ):
+            response = self.client.get(f"/hr/documents/{document.pk}/view/")
+        self.assertEqual(response.status_code, 200)  # not a 500
+        self.assertIn("error", response.context)

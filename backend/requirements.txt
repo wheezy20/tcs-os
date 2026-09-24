@@ -7,3 +7,4 @@ django-environ>=0.11
 django-cors-headers>=4.4
 django-unfold>=0.20
 google-cloud-tasks>=2.16
+weasyprint>=62

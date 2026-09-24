@@ -191,21 +191,65 @@ it does not retroactively apply to admissions' public forms, and a
 future module should not assume this is now the house default without
 its own explicit decision.
 
-## Employee-generated documents (pattern to port from the ERP)
+## Employee-generated documents (Session 7 — built)
 
-The ERP's `employee_generated_documents` design (Appointment Letter,
-Probation Letter, Contract-Teaching/Non-Teaching) is one generalized
-lifecycle table with a `document_kind` column, not one table per
-document type — all three share identical mechanics (Draft → Issued →
-Superseded, old versions archived not deleted, at most one currently-
-Issued document per employee per kind). Port this shape rather than the
-ERP's specific rendering mechanism (html2canvas + jsPDF, a client-side,
-React-specific solution) — the Django port should render server-side
-(e.g. WeasyPrint or a similar HTML-to-PDF library) rather than
-reproducing the ERP's client-side approach, since that mechanism exists
-only because the ERP is a browser SPA with no server-side rendering
-step. Full lifecycle/versioning rules are documented here once this is
-actually built in TCS OS (Merge Phase 1, Session 7 in `PLAN.md`).
+Ports the ERP's `employee_generated_documents` design (Appointment
+Letter, Probation Letter, Contract-Teaching, Contract-Non-Teaching) as
+one generalized `EmployeeGeneratedDocument` lifecycle table with a
+`document_kind` column (`backend/modules/hr/models.py`), not one table
+per document type — matching this section's original plan. Rendered
+server-side via **WeasyPrint** (not the ERP's client-side html2canvas +
+jsPDF, which only exists because the ERP is a browser SPA with no
+server-side rendering step).
+
+**Lifecycle: Draft → Issued → Superseded, versioned, never edited in
+place.** `generate_document()` always creates a new Draft row (never
+mutates an existing one); `issue_document()` promotes a Draft to Issued,
+after first demoting any existing Issued row for the same
+`(employee, document_kind)` to Superseded — that ordering is required,
+not incidental, because at most one currently-Issued row per
+`(employee, document_kind)` is enforced at the **database** level via a
+partial `UniqueConstraint` (`condition=Q(status="Issued")`), not just by
+application-code discipline. A second `UniqueConstraint` on
+`(employee, document_kind, version)` closes a narrower gap: version-
+number computation happens under `select_for_update()`, but that can't
+lock a row that doesn't exist yet (a first-ever generation), so the
+constraint is the real backstop against two concurrent
+`generate_document()` calls computing the same "next version" — caught
+and surfaced as a clean error, not an unhandled 500.
+
+`discard_document()` deletes a Draft row outright rather than
+introducing a 4th status — a Draft was never issued, so there's no
+"never delete, archive instead" history to protect the way an Issued/
+Superseded row has (a deliberate decision, confirmed 2026-09-24, not an
+inconsistency with that convention elsewhere in this project).
+
+**Merge fields and template body.** Each `ContractTemplate`'s
+`html_body` (one row per `document_kind`, seeded blank — no letter/
+contract prose invented by this port) is filled in via the same
+whitelist `{{field}}` substitution used for bulk email
+(`render_template()`, extracted from `modules.admissions.bulk_email`
+into the shared `tcs_os/text_merge.py` in this session so neither module
+imports the other's internals), never Django's real template engine.
+`EmployeeGeneratedDocument.merge_data` (JSONField) is a frozen snapshot
+of exactly what was substituted at generation time, kept even if the
+Employee record changes later — a historical document's own record of
+what it actually said never silently drifts.
+
+**Storage.** A second private Supabase Storage bucket
+(`hr-documents`, `settings.HR_DOCUMENT_STORAGE_BUCKET`) in the same
+Supabase project as admissions' bucket — signed URLs only, minted fresh
+on every "View" click, never stored/cached (`modules/hr/storage.py`,
+mirroring `modules/admissions/storage.py`'s convention exactly). One
+real shape difference from admissions worth naming: admissions mints a
+signed *upload* URL for a browser to PUT a file directly; hr generates
+the PDF server-side and already holds the bytes, so it uploads directly
+via a plain POST instead.
+
+**Letterhead.** `settings.HR_DOCUMENT_LETTERHEAD` is a fixed dict
+(company name/address/phone/email) — a Django setting, not a DB table,
+since TCS OS is single-tenant. Real, confirmed values; not a placeholder
+to invent or adjust.
 
 ## Branding
 

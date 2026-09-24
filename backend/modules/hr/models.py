@@ -10,6 +10,7 @@ ERP's calculation reads them and avoids a classic "is this 13 or 0.13" bug
 at the one place it matters most.
 """
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -44,6 +45,26 @@ class Employee(models.Model):
     employment_status = models.CharField(
         max_length=20, choices=EMPLOYMENT_STATUS_CHOICES, default="active",
     )
+
+    # Session 7 — reference/merge-field data for generated documents
+    # (documents.py). Plain free-text fields, deliberately no FK to a
+    # position/department reference table yet (future scope, same
+    # deferral noted for these two back in Session 4's docs). No choices
+    # on employment_type/payment_method either — no existing reference
+    # list to draw an enum from, and inconsistent free text (e.g.
+    # "Full-time" vs "Full Time") is an accepted tradeoff for now; worth
+    # revisiting once real data shows this needs tightening.
+    position = models.CharField(max_length=100, blank=True)
+    department = models.CharField(max_length=100, blank=True)
+    employment_type = models.CharField(max_length=50, blank=True)
+    payment_method = models.CharField(max_length=50, blank=True)
+    start_date = models.DateField(
+        null=True, blank=True,
+        help_text="Also used to compute probation_duration_months for a Probation Letter, "
+        "alongside probation_end_date — see documents.build_merge_data().",
+    )
+    probation_end_date = models.DateField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -338,3 +359,134 @@ class StatutoryRate(models.Model):
             f"SSNIT (Tier 1) employee {self.ssnit_employee_pct} / employer {self.ssnit_employer_pct}; "
             f"Tier 2 (employee-only) {self.tier2_employee_pct}"
         )
+
+
+# Session 7 — employee-generated documents. One generalized lifecycle
+# table with a document_kind column (see EmployeeGeneratedDocument),
+# porting the ERP's employee_generated_documents design rather than one
+# table per document type — see docs/DESIGN.md's "Employee-generated
+# documents" section. Shared by both ContractTemplate.category and
+# EmployeeGeneratedDocument.document_kind so the two can never drift
+# apart into two different sets of "valid kinds".
+DOCUMENT_KIND_CHOICES = [
+    ("Appointment Letter", "Appointment Letter"),
+    ("Probation Letter", "Probation Letter"),
+    ("Contract-Teaching", "Contract-Teaching"),
+    ("Contract-Non-Teaching", "Contract-Non-Teaching"),
+]
+
+
+class ContractTemplate(models.Model):
+    """One editable HTML body per document kind — what documents.py's
+    generate_document() merges employee/letterhead data into before
+    rendering a PDF. `html_body` uses the {{field}} whitelist-substitution
+    convention (tcs_os.text_merge.render_template), never Django's real
+    template engine, so an HR staff member editing this in admin can't
+    accidentally (or deliberately) execute template logic.
+
+    Seeded with html_body="" for all 4 kinds by an idempotent data
+    migration — no letter/contract prose is invented by this port; real
+    text has to be entered by a human before a kind is usable. This is
+    enforced in documents.generate_document() (raises on blank
+    html_body), not just documented here — a blank body must never
+    silently produce an empty "document"."""
+
+    category = models.CharField(max_length=30, choices=DOCUMENT_KIND_CHOICES, unique=True)
+    html_body = models.TextField(
+        blank=True,
+        help_text="{{field}} placeholders only — see documents.build_merge_data() for the exact "
+        "field list per document kind. Blank means this kind cannot be generated yet.",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["category"]
+
+    def __str__(self):
+        return self.category
+
+
+class EmployeeGeneratedDocument(models.Model):
+    """One generated document (a specific PDF, in Supabase Storage) for one
+    employee. Draft -> Issued -> Superseded, versioned rather than
+    overwritten — old versions are archived (status becomes Superseded),
+    never deleted, matching how Payslip/Application treat their own
+    finalized records. See documents.py for the three lifecycle
+    transitions (issue_document, discard_document, record_acceptance).
+
+    At most one currently-Issued row per (employee, document_kind) is
+    enforced at the DATABASE level via the partial unique constraint
+    below, not just in application code — issue_document() must demote
+    any existing Issued row to Superseded BEFORE promoting a new one, or
+    the constraint rejects the write.
+
+    A second constraint enforces unique (employee, document_kind,
+    version) tuples at the database level too — generate_document()
+    computes the next version under select_for_update() locking, but
+    that only locks rows that already exist (the first-ever generation
+    for an employee+kind has nothing to lock), so this constraint is the
+    real backstop against two concurrent generate_document() calls
+    computing the same "next version" and both trying to use it."""
+
+    STATUS_CHOICES = [
+        ("Draft", "Draft"),
+        ("Issued", "Issued"),
+        ("Superseded", "Superseded"),
+    ]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="generated_documents")
+    document_kind = models.CharField(max_length=30, choices=DOCUMENT_KIND_CHOICES)
+    version = models.PositiveIntegerField(help_text="1-based, per (employee, document_kind).")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="Draft")
+
+    storage_path = models.CharField(
+        max_length=500,
+        help_text="Path within the HR_DOCUMENT_STORAGE_BUCKET Supabase Storage bucket — not a "
+        "URL. The bucket is private, so viewing a document means minting a fresh signed URL on "
+        "demand (modules/hr/storage.py's create_read_url()) rather than storing one, since a "
+        "signed URL created before the file exists would 404, and one stored long-term would "
+        "eventually expire silently.",
+    )
+    merge_data = models.JSONField(
+        help_text="A frozen snapshot of every field substituted into this specific PDF at "
+        "generation time — kept even if the employee's own record changes later, so this "
+        "document's history stays an accurate record of what was actually issued.",
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="hr_documents_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="hr_documents_issued",
+    )
+    issued_at = models.DateTimeField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+
+    acceptance_signature_name = models.CharField(
+        max_length=255, blank=True,
+        help_text="HR-recorded, not self-service signing — see documents.record_acceptance().",
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["employee", "document_kind", "-version"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "document_kind"],
+                condition=models.Q(status="Issued"),
+                name="one_issued_document_per_employee_kind",
+            ),
+            models.UniqueConstraint(
+                fields=["employee", "document_kind", "version"],
+                name="unique_document_version_per_employee_kind",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.document_kind} v{self.version} — {self.employee} ({self.get_status_display()})"

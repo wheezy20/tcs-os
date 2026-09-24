@@ -1,0 +1,102 @@
+{% extends "hr/base.html" %}
+{% block title %}{{ employee }}{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <h2 class="font-heading text-2xl text-primary">{{ employee.full_name }}</h2>
+  <p class="text-sm text-gray-600">
+    {{ employee.employee_number }} · {{ employee.get_employment_status_display }}
+    {% if employee.position %} · {{ employee.position }}{% endif %}
+    {% if employee.department %} · {{ employee.department }}{% endif %}
+  </p>
+</div>
+
+{% if error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-6">{{ error }}</div>
+{% endif %}
+
+<section x-data="{ kind: '' }" class="bg-white border border-brandborder rounded-lg p-6 mb-6">
+  <h3 class="font-heading text-lg text-primary mb-3">Generate a document</h3>
+  <form method="post" action="{% url 'hr:employee-document-generate' employee.pk %}" class="space-y-4">
+    {% csrf_token %}
+    <div>
+      <label class="block text-sm font-medium mb-1">Document kind</label>
+      <select name="document_kind" x-model="kind" class="w-full border border-brandborder rounded px-3 py-2">
+        <option value="">Select a kind…</option>
+        {% for value, label in document_kinds %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div x-show="kind === 'Contract-Teaching' || kind === 'Contract-Non-Teaching'" x-cloak>
+      <label class="block text-sm font-medium mb-1">Contract variant</label>
+      <select name="contract_variant" class="w-full border border-brandborder rounded px-3 py-2">
+        <option value="Teaching">Teaching</option>
+        <option value="Non-Teaching">Non-Teaching</option>
+      </select>
+    </div>
+    <div x-show="kind === 'Probation Letter'" x-cloak>
+      <label class="block text-sm font-medium mb-1">
+        Probation duration (months) — only needed if the employee has no start_date/probation_end_date set
+      </label>
+      <input type="number" name="manual_probation_months" min="0"
+             class="w-full border border-brandborder rounded px-3 py-2" />
+    </div>
+    <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+      Generate
+    </button>
+  </form>
+</section>
+
+<section class="bg-white border border-brandborder rounded-lg p-6">
+  <h3 class="font-heading text-lg text-primary mb-3">Documents</h3>
+  {% regroup generated_documents by document_kind as kind_groups %}
+  {% if kind_groups %}
+  {% for group in kind_groups %}
+  <div class="mb-4">
+    <h4 class="font-medium text-sm text-gray-500 mb-2">{{ group.grouper }}</h4>
+    <ul class="divide-y divide-brandborder">
+      {% for doc in group.list %}
+      <li class="py-2 flex items-center justify-between text-sm">
+        <div>
+          v{{ doc.version }}
+          <span class="ml-2 px-2 py-0.5 rounded-full text-xs font-medium
+            {% if doc.status == 'Draft' %}bg-gray-100 text-gray-700
+            {% elif doc.status == 'Issued' %}bg-green-100 text-green-800
+            {% else %}bg-yellow-100 text-yellow-800{% endif %}">
+            {{ doc.status }}
+          </span>
+          {% if doc.accepted_at %}
+          <span class="ml-2 text-xs text-gray-500">Accepted by {{ doc.acceptance_signature_name }}</span>
+          {% endif %}
+        </div>
+        <div class="flex items-center gap-3">
+          <a href="{% url 'hr:employee-document-view' doc.pk %}" class="text-primary underline" target="_blank">View</a>
+          {% if doc.status == 'Draft' %}
+          <form method="post" action="{% url 'hr:employee-document-issue' doc.pk %}" class="inline">
+            {% csrf_token %}
+            <button type="submit" class="text-accent underline">Issue</button>
+          </form>
+          <form method="post" action="{% url 'hr:employee-document-discard' doc.pk %}" class="inline">
+            {% csrf_token %}
+            <button type="submit" class="text-red-600 underline">Discard</button>
+          </form>
+          {% endif %}
+          {% if doc.status == 'Issued' and not doc.accepted_at %}
+          <form method="post" action="{% url 'hr:employee-document-accept' doc.pk %}" class="inline flex items-center gap-2">
+            {% csrf_token %}
+            <input type="text" name="signature_name" placeholder="Signature name" required
+                   class="border border-brandborder rounded px-2 py-1 text-xs" />
+            <button type="submit" class="text-primary underline">Record Acceptance</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="text-gray-500">No documents generated yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -15,7 +15,6 @@ here, the same credential already used as the SMTP password.
 
 import json
 import logging
-import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,14 +24,14 @@ from django.core.validators import EmailValidator
 from django.db.models import Count, Q
 from django.utils import timezone
 
+from tcs_os.text_merge import render_template  # noqa: F401 — re-exported, see below
+
 from .models import Application, EmailCampaignRecipient, Guardian, Lead, Student
 
 logger = logging.getLogger(__name__)
 
 RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
 RESEND_BATCH_MAX_SIZE = 100  # Resend's own per-request cap
-
-PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 _EMAIL_VALIDATOR = EmailValidator()
 
@@ -68,16 +67,11 @@ def invalid_email_reason(email):
     return None
 
 
-def render_template(text, context):
-    """Simple whitelisted {{name}} substitution — deliberately not Django's
-    template engine, which would let a staff-authored subject/body execute
-    arbitrary {% %} template logic. A mail-merge doesn't need that, and this
-    is safer. An unknown placeholder is left as-is (visibly wrong) rather
-    than silently blanked, so a typo shows up in Preview instead of vanishing."""
-    def replace(match):
-        key = match.group(1)
-        return str(context[key]) if key in context else match.group(0)
-    return PLACEHOLDER_PATTERN.sub(replace, text)
+# render_template() moved to tcs_os/text_merge.py (Session 7 of the hr
+# module's build) — imported above and re-exported here so every existing
+# `from .bulk_email import render_template` / `bulk_email.render_template(...)`
+# call site (admin.py, tests.py) keeps working unchanged. hr/documents.py
+# imports it from tcs_os.text_merge directly, not from here.
 
 
 def _unsubscribe_url(token):

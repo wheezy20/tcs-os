@@ -21,7 +21,8 @@ from django.db import IntegrityError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
-from .models import Employee, PayrollRun, PayrollRunLockedError, Payslip
+from . import documents, storage
+from .models import DOCUMENT_KIND_CHOICES, Employee, EmployeeGeneratedDocument, PayrollRun, PayrollRunLockedError, Payslip
 from .payroll import PayrollConfigError, calculate_payslip
 
 
@@ -276,3 +277,124 @@ class PayrollRunRejectView(HrStaffRequiredMixin, View):
         run.rejection_reason = reason
         run.save()
         return redirect("hr:payroll-run-detail", pk=run.pk)
+
+
+# --- Session 7: employee-generated documents ---
+#
+# Reuses hr.can_process_payroll (the Session 6 permission) rather than
+# minting a new one — this is HR-administrative work, not payroll
+# approval specifically, but a dedicated permission for one feature
+# wasn't judged to be justified. All five views below share that gate.
+
+class EmployeeDetailView(HrStaffRequiredMixin, View):
+    """A minimal, read-only employee profile page (name, number, status,
+    position, department — no edit form; editing an Employee stays an
+    admin task for now) with the Documents section from the spec living
+    on it. Built specifically because no Employee-centric page existed
+    anywhere in the project before this session — Session 6 only built
+    PayrollRun-centric views."""
+
+    permission_required = "hr.can_process_payroll"
+
+    def get(self, request, pk):
+        employee = get_object_or_404(Employee, pk=pk)
+        return render(
+            request, "hr/employee_detail.html",
+            {
+                "employee": employee,
+                "document_kinds": DOCUMENT_KIND_CHOICES,
+                "contract_kinds": documents.CONTRACT_KINDS,
+                "generated_documents": employee.generated_documents.all(),
+            },
+        )
+
+
+class EmployeeDocumentGenerateView(HrStaffRequiredMixin, View):
+    permission_required = "hr.can_process_payroll"
+
+    def post(self, request, pk):
+        employee = get_object_or_404(Employee, pk=pk)
+        document_kind = request.POST.get("document_kind")
+        contract_variant = request.POST.get("contract_variant") or None
+        manual_probation_months = request.POST.get("manual_probation_months") or None
+        if manual_probation_months is not None:
+            try:
+                manual_probation_months = int(manual_probation_months)
+            except ValueError:
+                manual_probation_months = None
+
+        try:
+            documents.generate_document(
+                employee, document_kind, request.user,
+                contract_variant=contract_variant, manual_probation_months=manual_probation_months,
+            )
+        except (documents.DocumentGenerationError, storage.HrStorageError) as exc:
+            return _render_employee_detail_with_error(request, employee, str(exc))
+
+        return redirect("hr:employee-detail", pk=employee.pk)
+
+
+def _render_employee_detail_with_error(request, employee, error):
+    return render(
+        request, "hr/employee_detail.html",
+        {
+            "employee": employee,
+            "document_kinds": DOCUMENT_KIND_CHOICES,
+            "contract_kinds": documents.CONTRACT_KINDS,
+            "generated_documents": employee.generated_documents.all(),
+            "error": error,
+        },
+    )
+
+
+class EmployeeGeneratedDocumentIssueView(HrStaffRequiredMixin, View):
+    permission_required = "hr.can_process_payroll"
+
+    def post(self, request, pk):
+        document = get_object_or_404(EmployeeGeneratedDocument, pk=pk)
+        try:
+            documents.issue_document(document, request.user)
+        except documents.DocumentLifecycleError as exc:
+            return _render_employee_detail_with_error(request, document.employee, str(exc))
+        return redirect("hr:employee-detail", pk=document.employee_id)
+
+
+class EmployeeGeneratedDocumentDiscardView(HrStaffRequiredMixin, View):
+    permission_required = "hr.can_process_payroll"
+
+    def post(self, request, pk):
+        document = get_object_or_404(EmployeeGeneratedDocument, pk=pk)
+        employee = document.employee
+        try:
+            documents.discard_document(document)
+        except documents.DocumentLifecycleError as exc:
+            return _render_employee_detail_with_error(request, employee, str(exc))
+        return redirect("hr:employee-detail", pk=employee.pk)
+
+
+class EmployeeGeneratedDocumentRecordAcceptanceView(HrStaffRequiredMixin, View):
+    permission_required = "hr.can_process_payroll"
+
+    def post(self, request, pk):
+        document = get_object_or_404(EmployeeGeneratedDocument, pk=pk)
+        signature_name = request.POST.get("signature_name", "")
+        try:
+            documents.record_acceptance(document, signature_name)
+        except (documents.DocumentLifecycleError, documents.DocumentGenerationError) as exc:
+            return _render_employee_detail_with_error(request, document.employee, str(exc))
+        return redirect("hr:employee-detail", pk=document.employee_id)
+
+
+class EmployeeGeneratedDocumentViewLinkView(HrStaffRequiredMixin, View):
+    """Mints a fresh signed URL and redirects to it — never stores or
+    caches one, same convention as admissions' document links."""
+
+    permission_required = "hr.can_process_payroll"
+
+    def get(self, request, pk):
+        document = get_object_or_404(EmployeeGeneratedDocument, pk=pk)
+        try:
+            url = storage.create_read_url(document.storage_path)
+        except storage.HrStorageError as exc:
+            return _render_employee_detail_with_error(request, document.employee, str(exc))
+        return redirect(url)

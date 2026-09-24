@@ -9,8 +9,22 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # requirements.txt uses psycopg2-binary (a self-contained wheel), so no
-# build-essential/libpq-dev needed here — nothing in requirements.txt
-# requires compiling from source.
+# build-essential/libpq-dev needed for that one — nothing else in
+# requirements.txt requires compiling from source either.
+#
+# weasyprint (Session 7 — hr document generation) needs a handful of
+# system shared libraries at runtime, not build tools: since WeasyPrint
+# 62+ dropped its Cairo/GTK rendering stack, a Debian wheel install only
+# needs libpango-1.0-0 (text shaping), libpangoft2-1.0-0 (FreeType font
+# backend for Pango) and libharfbuzz-subset0 (font subsetting) — verified
+# against WeasyPrint's own current install docs
+# (doc.courtbouillon.org/weasyprint/stable/first_steps.html), not the
+# older libcairo2/libgdk-pixbuf2.0-0/libpangocairo-1.0-0 list that
+# earlier WeasyPrint versions (<=52, Cairo-based) required.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

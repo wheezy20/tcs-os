@@ -270,6 +270,24 @@ SUPABASE_URL = env("SUPABASE_URL", default="")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", default="")
 SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-documents")
 
+# hr's employee-generated documents (Session 7) — a second, separate private
+# bucket in the SAME Supabase project (same SUPABASE_URL/SERVICE_ROLE_KEY
+# above), namespaced per module per docs/shared-stack.md, not a second
+# Supabase project. See modules/hr/storage.py.
+HR_DOCUMENT_STORAGE_BUCKET = env("HR_DOCUMENT_STORAGE_BUCKET", default="hr-documents")
+
+# Fixed letterhead content for every hr-generated document (Appointment
+# Letter, Probation Letter, Contract). Real, confirmed values — TCS OS is
+# single-tenant (one school), so this is a Django setting, not a DB table.
+# Do not edit these without confirming the change with Eyram directly; they
+# are not placeholders. See modules/hr/documents.py.
+HR_DOCUMENT_LETTERHEAD = {
+    "company_name": "Treasures Christian School",
+    "company_address": "Somey Down, Opposite Plan International, Ho\nP.O. Box 708 HP, Ho",
+    "company_phone": "+233592651660",
+    "company_email": "treasures.sch@gmail.com",
+}
+
 # Enforced in three places, in increasing order of trust: the browser (instant
 # feedback, trivially bypassed), UploadURLRequestSerializer (rejects a bad
 # request before a signed URL is even minted, but trusts the client-declared
