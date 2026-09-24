@@ -57,7 +57,7 @@ anything here applies everywhere.
 - [x] `calculate_payslip()` verified against a real ERP payslip
       (Emmanuel Ansah, basic 6,500) to the cent, including the
       per-band PAYE rounding order
-- [ ] `admin.py` registration for the HR models
+- [x] `admin.py` registration for the HR models
 - [ ] A proper test suite (not just hand-verification) built from the
       Emmanuel Ansah payslip as ground truth
 - [ ] Views/URLs for the actual payroll workflow (create run, generate
