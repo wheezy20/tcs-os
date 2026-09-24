@@ -31,4 +31,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/admissions/", include("modules.admissions.urls")),
     # future modules: path("api/hr/", include("modules.hr.urls")), etc.
+
+    # hr's payroll workflow — staff-facing HTML pages (not an API), so a
+    # plain prefix rather than api/hr/. See modules/hr/views.py.
+    path("hr/", include("modules.hr.urls")),
 ]

@@ -160,6 +160,37 @@ exactly that kind of record. This is a confirmed-correct decision, not a
 placeholder: a future session finding no edit path on `Payslip` in the
 admin shouldn't treat it as missing functionality to add.
 
+**Session 6 extends this to the view layer and to PayrollRun itself.**
+`Payslip.save()`/`delete()` (`backend/modules/hr/models.py`) now raise
+`PayrollRunLockedError` if the parent `PayrollRun.status == "posted"` —
+a model-level backstop that holds regardless of entry point (view,
+admin, shell), the same "gate lives in `save()`" pattern
+`Application.save()` uses in `modules/admissions/models.py` for its
+stage gate. "Posted" means locked only for now — no journal-entry/
+Finance posting exists yet (Merge Phase 2, out of scope for Session 6).
+
+## Frontend toolchain — hr's staff-facing payroll views (Session 6 deviation)
+
+`docs/shared-stack.md`'s confirmed frontend convention is hand-built,
+dependency-free HTML/CSS/JS with no build step, and that remains the
+default for every public-facing form (admissions' `templates/public/`).
+Session 6's payroll workflow (`backend/modules/hr/views.py` +
+`templates/hr/`) deliberately deviates from it: **Tailwind (via CDN
+`<script>`, no build step) + Alpine.js**, a conscious choice for this
+one area rather than an oversight — staff-facing CRUD screens with
+bulk-select, modals, and conditional per-permission UI are a different
+problem than three public marketing forms, and hand-rolling that
+interactivity in vanilla JS was judged not worth it here. Still no
+build step and no new backend dependency (both load from CDN, same
+"drop a `<script>` tag" spirit as the Google Fonts `<link>` every
+existing template already uses). `templates/hr/base.html` carries the
+same brand palette/fonts as `templates/public/apply.html`
+(`docs/admissions/brand-tokens.md`) so the two toolchains still look
+like one product. This is scoped to `hr`'s staff views specifically —
+it does not retroactively apply to admissions' public forms, and a
+future module should not assume this is now the house default without
+its own explicit decision.
+
 ## Employee-generated documents (pattern to port from the ERP)
 
 The ERP's `employee_generated_documents` design (Appointment Letter,

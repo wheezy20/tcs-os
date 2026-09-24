@@ -1,0 +1,36 @@
+{% extends "hr/base.html" %}
+{% block title %}New Payroll Run{% endblock %}
+{% block content %}
+<h2 class="font-heading text-2xl text-primary mb-4">New Payroll Run</h2>
+
+{% if errors.non_field %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-4">{{ errors.non_field }}</div>
+{% endif %}
+
+<form method="post" class="space-y-4 bg-white border border-brandborder rounded-lg p-6">
+  {% csrf_token %}
+  <div>
+    <label class="block text-sm font-medium mb-1">Branch</label>
+    <input type="text" name="branch" value="{{ values.branch|default:'' }}"
+           class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.branch %}<p class="text-red-600 text-sm mt-1">{{ errors.branch }}</p>{% endif %}
+  </div>
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Month (1–12)</label>
+      <input type="number" name="month" min="1" max="12" value="{{ values.month|default:'' }}"
+             class="w-full border border-brandborder rounded px-3 py-2" />
+      {% if errors.month %}<p class="text-red-600 text-sm mt-1">{{ errors.month }}</p>{% endif %}
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Year</label>
+      <input type="number" name="year" value="{{ values.year|default:'' }}"
+             class="w-full border border-brandborder rounded px-3 py-2" />
+      {% if errors.year %}<p class="text-red-600 text-sm mt-1">{{ errors.year }}</p>{% endif %}
+    </div>
+  </div>
+  <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+    Create Payroll Run
+  </button>
+</form>
+{% endblock %}

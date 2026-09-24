@@ -107,7 +107,18 @@ class PayrollRun(models.Model):
     """One payroll cycle for one branch/month/year. `branch` is a plain
     CharField for now — no Branch model exists yet anywhere in TCS OS, and
     introducing one is out of scope for this port; revisit if a second
-    module ever needs to relate to branches structurally."""
+    module ever needs to relate to branches structurally.
+
+    Session 6 — the two custom permissions below gate the payroll workflow
+    views (modules/hr/views.py): can_process_payroll (create a run,
+    generate payslips, submit for review — the "Payroll Processor" Group)
+    and can_approve_payroll (approve & post, reject — granted only to the
+    existing admissions "Administration" Group, deliberately not
+    delegable to a processor role; see migrations/0003). Once status is
+    "posted", the run's payslips are immutable — see Payslip.save()/
+    delete() below, the model-level backstop that holds regardless of
+    which view/admin/shell path is used, following the same pattern as
+    Application.save()'s stage gate in modules/admissions/models.py."""
 
     STATUS_CHOICES = [
         ("draft", "Draft"),
@@ -119,15 +130,36 @@ class PayrollRun(models.Model):
     month = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
     year = models.PositiveIntegerField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Required when rejecting a run back to Draft from Ready for Review — see "
+        "PayrollRunRejectView. Not cleared automatically on the next submit, so a reviewer "
+        "can still see what was fixed; overwritten by the next rejection, if any.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-year", "-month", "branch"]
         unique_together = ("branch", "month", "year")
+        permissions = [
+            ("can_process_payroll", "Can create payroll runs, generate payslips, and submit for review"),
+            ("can_approve_payroll", "Can approve, post, and reject payroll runs"),
+        ]
 
     def __str__(self):
         return f"{self.branch} {self.month:02d}/{self.year} ({self.get_status_display()})"
+
+
+class PayrollRunLockedError(Exception):
+    """Raised by Payslip.save()/delete() when the parent PayrollRun is
+    already "posted" — see Payslip's docstring. Mirrors PayrollConfigError
+    (payroll.py) as a plain, deliberate exception rather than a silent
+    no-op: once a run is posted, no further create/update/delete on its
+    payslips is allowed, matching the admin-layer lockdown already in
+    place (PayslipAdmin disables add/change/delete outright) and the same
+    "once closed, no edits to history" convention Application.save()'s
+    stage gate follows in modules/admissions/models.py."""
 
 
 class Payslip(models.Model):
@@ -137,7 +169,14 @@ class Payslip(models.Model):
     docstring) so saving one is just `Payslip.objects.create(payroll_run=...,
     employee=..., **calculate_payslip(...))`. Itemized allowance lines
     aren't persisted here yet — only the summed total_allowances — since no
-    per-line allowance model was in scope for this port."""
+    per-line allowance model was in scope for this port.
+
+    Immutable once its PayrollRun is posted (Session 6) — see save()/
+    delete() below. This is a model-level backstop, not just a view-layer
+    permission check or the existing admin-layer lockdown (PayslipAdmin):
+    it holds even against a shell session, a future view that forgets to
+    check run.status, or any other code path that isn't the intended
+    payroll workflow."""
 
     payroll_run = models.ForeignKey(PayrollRun, on_delete=models.CASCADE, related_name="payslips")
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payslips")
@@ -175,6 +214,32 @@ class Payslip(models.Model):
 
     def __str__(self):
         return f"Payslip: {self.employee} — {self.payroll_run}"
+
+    def _payroll_run_is_posted(self):
+        """Deliberately a fresh DB read (self.payroll_run_id, not
+        self.payroll_run.status) — the FK's cached related object can be
+        stale if `self.payroll_run` was fetched before another request
+        posted the run, which would let a real concurrent-request race
+        slip past a check against the in-memory attribute. This closes
+        that: every save()/delete() re-checks the run's CURRENT status in
+        the database, not whatever status the caller's Python object
+        happened to hold when it was first loaded."""
+        return PayrollRun.objects.filter(pk=self.payroll_run_id).values_list("status", flat=True).first() == "posted"
+
+    def save(self, *args, **kwargs):
+        if self._payroll_run_is_posted():
+            raise PayrollRunLockedError(
+                f"{self.payroll_run} is posted — its payslips are locked. "
+                f"A correction requires reopening the run, not editing a posted payslip."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self._payroll_run_is_posted():
+            raise PayrollRunLockedError(
+                f"{self.payroll_run} is posted — its payslips are locked and cannot be deleted."
+            )
+        super().delete(*args, **kwargs)
 
 
 class AllowanceType(models.Model):

@@ -1,0 +1,6 @@
+{% extends "hr/base.html" %}
+{% block title %}Payroll run{% endblock %}
+{% block content %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-4">{{ error }}</div>
+<a href="{% url 'hr:payroll-run-detail' run.pk %}" class="text-primary underline">Back to payroll run</a>
+{% endblock %}

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>{% block title %}Payroll{% endblock %} — TCS OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet" />
+{# Session 6 — Tailwind (CDN, no build step) + Alpine, a deliberate deviation
+   from docs/shared-stack.md's default hand-built-HTML convention, recorded
+   in docs/DESIGN.md's frontend section. Brand palette/fonts below match
+   docs/admissions/brand-tokens.md exactly — see templates/public/apply.html
+   for the hand-built equivalent this mirrors. #}
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          heading: ['Cinzel', 'serif'],
+          body: ['"DM Sans"', 'sans-serif'],
+        },
+        colors: {
+          primary: { DEFAULT: '#005E61', hover: '#0B4C50' },
+          accent: '#11B87A',
+          brandbg: '#F3FAFA',
+          brandborder: '#D5E5E5',
+        },
+      },
+    },
+  };
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="font-body bg-brandbg text-[#1A2E2E] min-h-screen">
+<header class="bg-white border-b border-brandborder px-6 py-4 flex items-center justify-between">
+  <h1 class="font-heading text-xl text-primary">TCS OS — Payroll</h1>
+  {% if user.is_authenticated %}
+  <div class="text-sm text-gray-600">
+    {{ user.get_full_name|default:user.username }}
+    · <a href="/admin/logout/" class="underline hover:text-primary">Log out</a>
+  </div>
+  {% endif %}
+</header>
+<main class="max-w-4xl mx-auto p-6">
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

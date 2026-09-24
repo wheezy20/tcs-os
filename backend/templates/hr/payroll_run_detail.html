@@ -1,0 +1,117 @@
+{% extends "hr/base.html" %}
+{% block title %}{{ run }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="font-heading text-2xl text-primary">{{ run.branch }} — {{ run.month }}/{{ run.year }}</h2>
+  <span class="px-3 py-1 rounded-full text-sm font-medium
+    {% if run.status == 'draft' %}bg-gray-100 text-gray-700
+    {% elif run.status == 'ready_for_review' %}bg-yellow-100 text-yellow-800
+    {% else %}bg-green-100 text-green-800{% endif %}">
+    {{ run.get_status_display }}
+  </span>
+</div>
+
+{% if run.status == 'draft' and run.rejection_reason %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-6">
+  <strong>Last rejection reason:</strong> {{ run.rejection_reason }}
+</div>
+{% endif %}
+
+{% if reject_error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-6">{{ reject_error }}</div>
+{% endif %}
+
+<section class="bg-white border border-brandborder rounded-lg p-6 mb-6">
+  <h3 class="font-heading text-lg text-primary mb-3">Payslips on this run ({{ payslips|length }})</h3>
+  {% if payslips %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-gray-500 border-b border-brandborder">
+        <th class="py-2">Employee</th><th>Gross</th><th>Net Pay</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for slip in payslips %}
+      <tr class="border-b border-brandborder">
+        <td class="py-2">{{ slip.employee }}</td>
+        <td>{{ slip.gross_salary }}</td>
+        <td>{{ slip.net_pay }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="text-gray-500">No payslips generated yet.</p>
+  {% endif %}
+</section>
+
+{% if can_process and run.status == 'draft' %}
+<section x-data="{ selected: [] }" class="bg-white border border-brandborder rounded-lg p-6 mb-6">
+  <h3 class="font-heading text-lg text-primary mb-3">Generate payslips</h3>
+  {% if candidate_employees %}
+  <form method="post" action="{% url 'hr:payroll-run-generate' run.pk %}">
+    {% csrf_token %}
+    <label class="flex items-center gap-2 mb-2 text-sm">
+      <input type="checkbox"
+             @click="selected = $event.target.checked ? Array.from($root.querySelectorAll('.emp-checkbox')).map(el => el.value) : []" />
+      Select all
+    </label>
+    <ul class="divide-y divide-brandborder mb-4">
+      {% for employee in candidate_employees %}
+      <li class="py-2 flex items-center gap-2">
+        <input type="checkbox" class="emp-checkbox" name="employee_id" value="{{ employee.pk }}" x-model="selected" />
+        <span>{{ employee }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+      Generate payslips for selected
+    </button>
+  </form>
+  {% else %}
+  <p class="text-gray-500">No eligible employees left to add to this run.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="flex gap-3">
+  {% if can_process and run.status == 'draft' and payslips %}
+  <form method="post" action="{% url 'hr:payroll-run-submit' run.pk %}">
+    {% csrf_token %}
+    <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+      Submit for Review
+    </button>
+  </form>
+  {% endif %}
+
+  {% if can_approve and run.status == 'ready_for_review' %}
+  <form method="post" action="{% url 'hr:payroll-run-approve' run.pk %}">
+    {% csrf_token %}
+    <button type="submit" class="bg-accent hover:opacity-90 text-white rounded px-4 py-2 font-medium">
+      Approve &amp; Post
+    </button>
+  </form>
+
+  <div x-data="{ open: false }">
+    <button @click="open = true" type="button" class="bg-red-600 hover:bg-red-700 text-white rounded px-4 py-2 font-medium">
+      Reject
+    </button>
+    <div x-show="open" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-10">
+      <form method="post" action="{% url 'hr:payroll-run-reject' run.pk %}"
+            class="bg-white rounded-lg p-6 w-full max-w-md" @click.outside="open = false">
+        {% csrf_token %}
+        <h4 class="font-heading text-lg text-primary mb-3">Reject payroll run</h4>
+        <label class="block text-sm font-medium mb-1">Reason (required)</label>
+        <textarea name="reason" required class="w-full border border-brandborder rounded px-3 py-2 mb-4"></textarea>
+        <div class="flex justify-end gap-2">
+          <button type="button" @click="open = false" class="px-4 py-2">Cancel</button>
+          <button type="submit" class="bg-red-600 hover:bg-red-700 text-white rounded px-4 py-2 font-medium">
+            Reject
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
