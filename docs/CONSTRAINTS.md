@@ -58,8 +58,13 @@ anything here applies everywhere.
       (Emmanuel Ansah, basic 6,500) to the cent, including the
       per-band PAYE rounding order
 - [x] `admin.py` registration for the HR models
-- [ ] A proper test suite (not just hand-verification) built from the
+- [x] A proper test suite (not just hand-verification) built from the
       Emmanuel Ansah payslip as ground truth
+- [ ] Allowance/overtime handling in `calculate_payslip()` (total
+      allowances, overtime pay, `AllowanceType.taxable` gating of the
+      PAYE base) has no test coverage yet — the Emmanuel Ansah
+      ground-truth case has zero of either, so this code path has never
+      actually been exercised by the test suite above
 - [ ] Views/URLs for the actual payroll workflow (create run, generate
       payslips, Draft → Ready for Review → Posted)
 - [ ] A real payroll month run in both TCS OS and the ERP in parallel,

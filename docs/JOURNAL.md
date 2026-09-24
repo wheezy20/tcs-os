@@ -148,3 +148,28 @@ doesn't have to reconstruct the reasoning:
    one is a settled, confirmed-correct decision, not an open gap; see
    above and `docs/DESIGN.md`'s payroll section for the rationale. It
    does not need revisiting the way 1 and 2 do.
+
+---
+
+## 2026-09-24 — HR Session 5: payroll test suite
+
+Added `backend/modules/hr/tests.py`, 15 tests covering
+`calculate_payslip()`: the Emmanuel Ansah ground-truth case (basic
+6,500) to the cent, the `pays_ssnit`/`pays_tier2`/`pays_paye` flags
+independently, PAYE band-crossing including a regression test for the
+Session 3 per-band-rounding bug, `EmployeePayConfig` effective-dating,
+`PayrollConfigError` on every missing-config scenario, and a sanity
+check that migration 0002 seeded real (not placeholder) GRA PAYE bands
+and Act 766 statutory rates. Full suite 100/100, `manage.py check` and
+`makemigrations --check --dry-run` both clean. Commit `b1c7723`.
+
+A code-reviewer pass flagged one real, deliberate gap: `calculate_payslip()`
+also handles `total_allowances`/overtime pay and `AllowanceType.taxable`
+gating of the PAYE base, but none of these 15 tests exercise it — the
+ground-truth case (and every other test here) has zero allowances and
+zero overtime. Rather than leave that true-but-unwritten, the gap is
+recorded as its own open item in `docs/CONSTRAINTS.md`'s HR/Finance
+go-live checklist, separate from (and below) the now-checked "proper
+test suite" item — the same lesson the Tier 2 incident already taught:
+an unwritten assumption is how that happened the first time.
+   does not need revisiting the way 1 and 2 do.

@@ -82,8 +82,12 @@ throughout, so no back-pay or compliance issue.
       `hr.can_manage_payroll`) — build at Session 6, once the payroll
       workflow below gives it something real to gate, same timing
       admissions' `can_decide` followed.
-- [ ] Session 5: Test suite (pytest/Django), built from the verified
-      Emmanuel Ansah payslip as ground truth
+- [x] Session 5: Test suite (pytest/Django), built from the verified
+      Emmanuel Ansah payslip as ground truth — 15 tests, 100/100 passing.
+      Deliberately deferred: allowance/overtime handling in
+      `calculate_payslip()` has no coverage (ground-truth case has zero
+      of either) — recorded as an open checklist item in
+      `docs/CONSTRAINTS.md` rather than left silent
 - [ ] Session 6: Views/URLs for the payroll workflow (create run,
       generate payslips, Draft → Ready for Review → Posted) — also the
       right moment to add the deferred payroll permission (see Session
