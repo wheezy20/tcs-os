@@ -88,10 +88,20 @@ throughout, so no back-pay or compliance issue.
       `calculate_payslip()` has no coverage (ground-truth case has zero
       of either) — recorded as an open checklist item in
       `docs/CONSTRAINTS.md` rather than left silent
-- [ ] Session 6: Views/URLs for the payroll workflow (create run,
-      generate payslips, Draft → Ready for Review → Posted) — also the
-      right moment to add the deferred payroll permission (see Session
-      4's note above)
+- [x] Session 6: Views/URLs for the payroll workflow (create run,
+      generate payslips, Draft → Ready for Review → Posted, reject) —
+      see `docs/JOURNAL.md`'s 2026-09-24 entry. Added the deferred
+      `hr.can_process_payroll`/`hr.can_approve_payroll` permissions
+      (Session 4's note above) via migrations 0003/0004, plus a
+      model-level `Payslip.save()`/`delete()` immutability gate once a
+      run is posted. Templates deviate from the project's default
+      hand-built-HTML convention (Tailwind CDN + Alpine.js) — see
+      `docs/DESIGN.md`'s new frontend-toolchain section. Deliberately
+      not built: a maker-checker check stopping the same user from both
+      processing and approving a run — recorded as a known boundary,
+      not an open item, in `docs/CONSTRAINTS.md`'s "Payroll approval"
+      section, with its own revisit trigger (a second person holding
+      payroll access).
 - [ ] Session 7: Employee-generated documents (Appointment Letter,
       Probation Letter, Contract), ported from the ERP's
       `employee_generated_documents` design

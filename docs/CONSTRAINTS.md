@@ -65,14 +65,37 @@ anything here applies everywhere.
       PAYE base) has no test coverage yet — the Emmanuel Ansah
       ground-truth case has zero of either, so this code path has never
       actually been exercised by the test suite above
-- [ ] Views/URLs for the actual payroll workflow (create run, generate
-      payslips, Draft → Ready for Review → Posted)
+- [x] Views/URLs for the actual payroll workflow (create run, generate
+      payslips, Draft → Ready for Review → Posted) — Session 6, see
+      `docs/JOURNAL.md`
 - [ ] A real payroll month run in both TCS OS and the ERP in parallel,
       compared line-by-line, before either system is trusted alone
 - [ ] Confirm the SSNIT/Tier 2 split above against an official SSNIT
       source (currently confirmed only against TCS's own stated
       practice — carried over as-is from the ERP's own unresolved
       checklist item, not newly discovered here)
+
+## Payroll approval — known boundary, not a gap
+
+- **No maker-checker control on payroll approval**: Session 6's payroll
+  workflow lets the same user who processed/generated a `PayrollRun`
+  also approve and post it — nothing in `hr.can_process_payroll` /
+  `hr.can_approve_payroll` stops one person holding both and using them
+  on the same run. This is a deliberate, considered boundary, not an
+  oversight: TCS today has exactly one person with any of this access
+  at all, so a "can't approve your own submission" rule would only
+  separate roles that don't yet have two different people to separate —
+  building it now would just create a dead end (what happens when
+  you're the only Administration user and genuinely need to both
+  process and approve, because there's nobody else). Unlike the Tier 2
+  incident (a wrong number sitting silently in production-adjacent
+  code), this is a documented, tested, intentional scope boundary with
+  its own trigger: **revisit once a second person holds
+  `hr.can_process_payroll` or `hr.can_approve_payroll`** (a second
+  Administration-group member, or someone added to the "Payroll
+  Processor" group) — that's the point at which the roles can actually
+  be separated, and the point at which this stops being acceptable
+  as-is.
 
 ## Data safety
 

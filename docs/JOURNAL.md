@@ -173,3 +173,70 @@ go-live checklist, separate from (and below) the now-checked "proper
 test suite" item — the same lesson the Tier 2 incident already taught:
 an unwritten assumption is how that happened the first time.
    does not need revisiting the way 1 and 2 do.
+
+---
+
+## 2026-09-24 — HR Session 6: payroll workflow views
+
+Added the payroll workflow's views/URLs and the deferred payroll
+permissions flagged back at Session 4. Migration 0003 adds
+`PayrollRun.Meta.permissions` (`can_process_payroll`,
+`can_approve_payroll`) plus a `rejection_reason` TextField. Migration
+0004 is an idempotent data migration creating a new "Payroll Processor"
+group (holds only `can_process_payroll`, nobody auto-assigned) and
+granting both new permissions to the existing admissions
+"Administration" group — using `.add()`/`.remove()` rather than 0017's
+`.set()` pattern, specifically because Administration's ~49 existing
+admissions permissions are owned by 0017, not this migration, and
+`.set()` here would have wiped them. Verified idempotent in both
+directions (permission count going 51↔49↔51) against a throwaway db.
+
+`backend/modules/hr/views.py` is the first staff-facing HTML views in
+the whole project — plain Django class-based views with
+`LoginRequiredMixin` + `PermissionRequiredMixin`, not DRF, since this is
+server-rendered staff tooling, not a JSON API. Covers the full
+`PayrollRun` lifecycle: create (rejects a duplicate branch/month/year
+with a clear error), generate payslips (a per-employee loop around the
+already-tested `calculate_payslip()`, skipping `PayrollConfigError`
+per-employee rather than failing the whole batch), submit for review,
+approve & post, and reject with a required reason back to Draft.
+"Posted" means locked only for now — no Finance/journal-entry posting
+yet, that's Merge Phase 2.
+
+Added a model-level immutability gate: `Payslip.save()`/`delete()` now
+raise `PayrollRunLockedError` once the parent run is posted. This was
+fixed twice in the same session. The first fix was view-level (a
+try/except around the mutation) and only caught the case where the same
+in-memory `PayrollRun` object was mutated after being fetched once. A
+code-reviewer pass flagged that this would silently miss a real
+concurrent-request race — two separate processes, each holding its own
+independently-fetched `PayrollRun` object, where the first process's
+in-memory status never sees the second process's post. The follow-up
+fix changed the gate to re-query `PayrollRun.status` fresh from the
+database on every `save()`/`delete()` call instead of trusting the
+cached FK object, closing the actual race rather than the apparent one.
+Verified via a test that mocks a genuinely separate run fetch going
+stale mid-batch. Caught and fixed within the session, not left as a
+known gap.
+
+Templates (`templates/hr/`) use Tailwind (CDN `<script>`, no build
+step) + Alpine.js — a deliberate deviation from the project's default
+hand-built-HTML convention, recorded in `docs/DESIGN.md`'s new
+"Frontend toolchain — hr's staff-facing payroll views" section.
+
+Verified: `manage.py test modules.hr` (35/35), full suite (120/120),
+`manage.py check`, `makemigrations --check --dry-run` — all clean.
+Commit `2c18ea9`.
+
+One thing considered and deliberately not built: a maker-checker
+control stopping the same user from both processing and approving a
+run. TCS currently has exactly one person with any of this access, so
+the rule would have nothing to separate yet, and would create a dead
+end the day the sole administrator needs to both process and approve
+because there's nobody else. This is not the same category as the
+allowance/overtime gap logged in Session 5 — that was an oversight to
+eventually close; this is a reasoned, scoped boundary with its own
+revisit trigger. Recorded as such in `docs/CONSTRAINTS.md`'s new
+"Payroll approval — known boundary, not a gap" section, not as an open
+checklist item: revisit once a second person holds
+`hr.can_process_payroll` or `hr.can_approve_payroll`.
