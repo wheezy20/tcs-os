@@ -72,11 +72,22 @@ throughout, so no back-pay or compliance issue.
 - [x] Session 3: Real GRA 2024 PAYE bands + statutory rates seeded, a
       PAYE rounding-order bug found and fixed, verified against a real
       ERP payslip (Emmanuel Ansah, basic 6,500) to the cent
-- [ ] Session 4: `admin.py` registration
+- [x] Session 4: `admin.py` registration — see `docs/JOURNAL.md`'s
+      2026-09-24 entry. Two items deliberately deferred rather than
+      built here: `Employee` `position`/`department` fields (a schema
+      change, out of scope for this session — port later using the
+      ERP's existing positions/departments reference-list pattern,
+      whenever more `Employee` fields get ported from the ERP
+      generally) and a dedicated payroll permission (e.g.
+      `hr.can_manage_payroll`) — build at Session 6, once the payroll
+      workflow below gives it something real to gate, same timing
+      admissions' `can_decide` followed.
 - [ ] Session 5: Test suite (pytest/Django), built from the verified
       Emmanuel Ansah payslip as ground truth
 - [ ] Session 6: Views/URLs for the payroll workflow (create run,
-      generate payslips, Draft → Ready for Review → Posted)
+      generate payslips, Draft → Ready for Review → Posted) — also the
+      right moment to add the deferred payroll permission (see Session
+      4's note above)
 - [ ] Session 7: Employee-generated documents (Appointment Letter,
       Probation Letter, Contract), ported from the ERP's
       `employee_generated_documents` design

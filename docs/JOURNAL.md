@@ -93,3 +93,58 @@ to confirm with the designer, not resolved silently.
   fix, once reverted) — confirm the ERP's local `db reset` state is
   clean and the deleted migration file is genuinely gone before the next
   session touches ERP payroll again.
+
+---
+
+## 2026-09-24 — HR Session 4: admin.py registration
+
+Added `backend/modules/hr/admin.py`, registering all 7 hr models
+(`Employee`, `EmployeePayConfig`, `PayrollRun`, `Payslip`,
+`AllowanceType`, `PAYEBand`, `StatutoryRate`) with unfold's `ModelAdmin`
+via `@admin.register`, following `modules/admissions/admin.py`'s existing
+conventions rather than inventing new ones. `PayslipAdmin` disables
+add/change/delete outright — the same "computed, never hand-edited"
+treatment as admissions' `TransactionalEmailAdmin`, and matching the
+ERP's own posted/closed-record convention (a correction is a new
+offsetting entry, never an edit to history). `PAYEBandAdmin` and
+`StatutoryRateAdmin` carry a help-text note on `effective_from` pointing
+back at `docs/CONSTRAINTS.md`'s statutory-accuracy checklist, so editing
+either table in the admin doesn't feel like a free action. Verified two
+ways: `manage.py check` clean, and a real Django test-`Client` hit
+against `/admin/` on a throwaway sqlite db, confirming the admin index
+actually renders all 7 models grouped under an "Hr" section (checked via
+the literal string "Models in the Hr application" appearing in the
+response). Commit `c610a19`.
+
+Three things came up and were deliberately deferred rather than folded
+into this commit — flagged for **Session 6 or 7** so a future session
+doesn't have to reconstruct the reasoning:
+
+1. **`Employee` has no `position`/`department` fields** (only
+   `employee_number`, `first_name`, `surname`, `basic_salary`,
+   `employment_status`, `created_at`) — the original ask for this admin
+   wanted them in `list_display`/`list_filter`, but adding them is a
+   schema change (a new migration) out of scope for "register the
+   models," and this project's one-feature-at-a-time convention says
+   model registration and model expansion shouldn't ride the same
+   commit. Flagged in `EmployeeAdmin`'s docstring in `admin.py`. When
+   this is ported, it should reuse the ERP's existing
+   positions/departments reference-list pattern rather than inventing a
+   new shape — the user was explicit that this is "a real,
+   already-refined pattern worth reusing," not a from-scratch design
+   question.
+2. **No dedicated payroll permission yet** (something like
+   `hr.can_manage_payroll`) — hr admin currently relies on plain Django
+   admin permissions (`is_staff` + default model perms), nothing like
+   admissions' `can_decide`/`can_view_health_info`. Flagged in a comment
+   at the top of `admin.py`. Deliberately not built now: admissions'
+   `can_decide` wasn't added at admissions' own initial
+   model-registration time either — it came in Phase 3, once real
+   approve/reject actions existed for it to gate. Payroll's equivalent
+   moment is Session 6, when the Draft → Ready for Review → Posted
+   payroll workflow actually gets built; a permission with nothing yet
+   to protect is premature.
+3. **`Payslip` is fully locked in admin (no add/change/delete)** — this
+   one is a settled, confirmed-correct decision, not an open gap; see
+   above and `docs/DESIGN.md`'s payroll section for the rationale. It
+   does not need revisiting the way 1 and 2 do.

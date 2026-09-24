@@ -149,6 +149,17 @@ September 2026 — SSNIT (employee) 32.50, Tier 2 (employee) 325.00, PAYE
 5,008.37**, SSNIT (employer) 845.00, total cost of employment 7,345.00.
 `hr.calculate_payslip()` reproduces every one of these to the cent.
 
+**Payslip records are immutable once generated — settled, not a gap.**
+`PayslipAdmin` (`backend/modules/hr/admin.py`) disables add, change, and
+delete outright, the same treatment as admissions'
+`TransactionalEmailAdmin` (computed/generated data, never hand-edited),
+and matching the ERP's own established convention that once a record is
+posted/closed, there is no update or delete — a correction is a new
+offsetting entry, never an edit to history. A generated `Payslip` is
+exactly that kind of record. This is a confirmed-correct decision, not a
+placeholder: a future session finding no edit path on `Payslip` in the
+admin shouldn't treat it as missing functionality to add.
+
 ## Employee-generated documents (pattern to port from the ERP)
 
 The ERP's `employee_generated_documents` design (Appointment Letter,
