@@ -63,7 +63,7 @@ split). Full incident writeup in `docs/DESIGN.md`. No real payroll had
 run on the incorrect version — ERP was still in test-run status
 throughout, so no back-pay or compliance issue.
 
-### Merge Phase 1 — HR module port (in progress)
+### Merge Phase 1 — HR module port — DONE (2026-09-24)
 
 - [x] Session 1: Django models (`Employee`, `EmployeePayConfig`,
       `PayrollRun`, `Payslip`, `AllowanceType`, `PAYEBand`,
@@ -102,9 +102,23 @@ throughout, so no back-pay or compliance issue.
       not an open item, in `docs/CONSTRAINTS.md`'s "Payroll approval"
       section, with its own revisit trigger (a second person holding
       payroll access).
-- [ ] Session 7: Employee-generated documents (Appointment Letter,
-      Probation Letter, Contract), ported from the ERP's
-      `employee_generated_documents` design
+- [x] Session 7: Employee-generated documents (Appointment Letter,
+      Probation Letter, Contract-Teaching, Contract-Non-Teaching) ported
+      from the ERP's `employee_generated_documents` design — see
+      `docs/JOURNAL.md`'s 2026-09-24 entry. One generalized
+      `EmployeeGeneratedDocument` lifecycle table plus `ContractTemplate`
+      (seeded blank), 6 new plain `Employee` fields, server-side
+      WeasyPrint rendering, a new `hr-documents` Supabase bucket, and the
+      project's first Employee detail page. Two races/bugs caught by a
+      code-reviewer pass and fixed within the session (a version-number
+      race on first-ever generation, and a missing `HrStorageError`
+      catch on the view-link action). Deliberately not built: a 4th
+      "Discarded" status (a Draft is deleted outright instead — never
+      issued, nothing to preserve). Genuinely still outstanding: the
+      `hr-documents` Supabase bucket itself hasn't been created in the
+      dashboard yet (manual infra step, code and the
+      `configure_hr_storage_bucket` command are ready) — a
+      `docs/deployment.md` item, not a code gap.
 
 ### Merge Phase 2 — Finance module port
 

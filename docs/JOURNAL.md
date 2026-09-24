@@ -240,3 +240,95 @@ revisit trigger. Recorded as such in `docs/CONSTRAINTS.md`'s new
 "Payroll approval — known boundary, not a gap" section, not as an open
 checklist item: revisit once a second person holds
 `hr.can_process_payroll` or `hr.can_approve_payroll`.
+
+---
+
+## 2026-09-24 — HR Session 7: employee-generated documents
+
+Ported the ERP's `employee_generated_documents` design: one generalized
+`EmployeeGeneratedDocument` lifecycle table with a `document_kind`
+column covering Appointment Letter, Probation Letter,
+Contract-Teaching, and Contract-Non-Teaching, rendered server-side via
+WeasyPrint instead of the ERP's client-side html2canvas/jsPDF. New
+`ContractTemplate` model holds an editable `html_body` per kind, seeded
+blank by an idempotent migration (0006) — no letter/contract prose
+invented. `Employee` gains 6 new plain fields (`position`,
+`department`, `employment_type`, `payment_method`, `start_date`,
+`probation_end_date`) — no reference table yet, matching Session 4's
+original deferral note. New private Supabase bucket (`hr-documents`,
+`modules/hr/storage.py`) mirrors admissions' signed-URL-only storage
+pattern; new `configure_hr_storage_bucket` management command mirrors
+admissions' equivalent. New `modules/hr/views.py` additions: the
+project's first Employee detail page plus generate/issue/discard/accept/
+view-link actions, gated on `hr.can_process_payroll` (Session 6's
+permission, reused rather than minted new).
+
+`EmployeeGeneratedDocument` carries two DB-level constraints: a partial
+unique index enforcing at most one `Issued` row per
+(employee, document_kind) — `issue_document()` must demote any existing
+`Issued` row to `Superseded` first, then promote, for this index to
+accept the promotion — and a unique (employee, document_kind, version)
+constraint (migration 0007) added as a backstop after a code-reviewer
+pass caught a narrow concurrent-request race in the version-number
+computation: `select_for_update()` can't lock a row that doesn't exist
+yet, so a first-ever generation for a given employee+kind had no real
+protection against two simultaneous callers computing the same "next
+version." The constraint turns that race into a clean
+`DocumentGenerationError` instead of a raw `IntegrityError`/500. A
+second code-reviewer finding, also fixed before commit:
+`EmployeeGeneratedDocumentViewLinkView` was the one new view that didn't
+catch its own `HrStorageError` and would have 500'd on a real signing
+failure — brought in line with every other new view's clean-error
+handling.
+
+New shared `tcs_os/text_merge.py`: `render_template()` extracted out of
+`modules/admissions/bulk_email.py` (re-exported there for existing call
+sites) so both apps use one whitelist `{{field}}` substitution
+implementation — never Django's real template engine — without a
+cross-module import between the two apps.
+
+Three decisions Eyram confirmed upfront before this session's code was
+written, each a real choice rather than an obvious default: (1) extract
+`render_template()` into the new shared `tcs_os/text_merge.py` rather
+than a cross-module import or a duplicated copy; (2) build a real,
+minimal Employee detail page (name, number, status, position,
+department — no edit form) rather than just a narrower document-list
+view, since no Employee-centric page existed anywhere in the project
+before this session; (3) `discard_document()` deletes a Draft row
+outright rather than adding a 4th "Discarded" status — a Draft was
+never issued, so there's nothing to preserve a history of, unlike this
+project's usual "archive, don't delete" convention.
+
+The Dockerfile's WeasyPrint system-library list in the original task
+spec was outdated, based on an older Cairo/GTK-based WeasyPrint version
+— verified against WeasyPrint's own current install docs via a real web
+fetch, and the correct current Debian package list
+(`libpango-1.0-0`, `libpangoft2-1.0-0`, `libharfbuzz-subset0`) used in
+the Dockerfile instead.
+
+All 4 document kinds were generated with real template content and
+each PDF individually opened and visually inspected — this project's
+existing "don't trust magic bytes" lesson (`docs/CONSTRAINTS.md`) — and
+it caught one real bug this way: `HR_DOCUMENT_LETTERHEAD`'s
+`company_address` has a real embedded newline that was collapsing to a
+single line in the rendered HTML/PDF output until `build_merge_data()`
+was changed to convert it to `<br>` at substitution time; the settings
+constant itself was never altered.
+
+Verified: `manage.py test modules.hr` (65/65), full suite (150/150 — 85
+admissions + 65 hr), `manage.py check`, `makemigrations --check
+--dry-run` (clean), and a real `docker build` — confirmed by actually
+running WeasyPrint inside the built container image, not just checking
+`pip install` succeeded. Commit `3856b4f`.
+
+One thing not built this session, still outstanding: the `hr-documents`
+Supabase bucket itself still needs creating in the Supabase dashboard (a
+manual infrastructure step — Eyram runs all commands with real
+infrastructure side effects, per `CLAUDE.md`) before this feature can be
+used against real storage. The code and the
+`configure_hr_storage_bucket` management command are ready; nothing in
+this session created the bucket. This is a deployment-runbook item
+(mirrors admissions' `docs/deployment.md` step 5b bucket-configuration
+pattern) rather than a `docs/CONSTRAINTS.md` hard rule, so it isn't
+logged there — worth adding to `docs/deployment.md` once hr gets its own
+deploy step.
