@@ -15,34 +15,25 @@ actions bypass save()" and "one bad item can't fail an entire batch"
 lessons.
 """
 
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
-from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
 from modules.admissions.models import Campus
 from modules.finance.posting import PostingError, post_payroll_run
+from tcs_os.staff_views import StaffRequiredMixin
 
 from . import documents, storage
 from .models import DOCUMENT_KIND_CHOICES, Employee, EmployeeGeneratedDocument, PayrollRun, PayrollRunLockedError, Payslip
 from .payroll import PayrollConfigError, calculate_payslip
 
 
-class HrStaffRequiredMixin(LoginRequiredMixin, PermissionRequiredMixin):
-    """Redirects an unauthenticated visitor to the staff login page (same
-    one Django admin uses — no separate hr login flow); raises a clean
-    403 for an authenticated user who's logged in but lacks the required
-    permission, rather than bouncing them back to the same login page
-    they're already past (the default PermissionRequiredMixin behaviour,
-    which reads as a confusing redirect loop for a real staff user)."""
-
-    login_url = "/admin/login/"
-
-    def handle_no_permission(self):
-        if self.request.user.is_authenticated:
-            raise PermissionDenied(self.get_permission_denied_message())
-        return super().handle_no_permission()
+class HrStaffRequiredMixin(StaffRequiredMixin):
+    """See tcs_os.staff_views.StaffRequiredMixin — extracted there in
+    finance Session 3 so modules.finance.views can share it too, rather
+    than duplicating it. Kept as a thin per-module subclass (not a bare
+    alias) so every existing `HrStaffRequiredMixin` reference in this
+    file/tests.py keeps working unchanged."""
 
 
 class PayrollRunCreateView(HrStaffRequiredMixin, View):

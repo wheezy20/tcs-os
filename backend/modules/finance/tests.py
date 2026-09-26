@@ -9,8 +9,9 @@ formats these tests exercise.
 
 from datetime import date
 from decimal import Decimal
+from unittest import mock
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -18,8 +19,8 @@ from django.test import TestCase
 from modules.admissions.models import Campus
 from tcs_os.reference_counter import ReferenceCounter
 
-from .models import Account, Expense, ExpenseCategory, JournalEntry, JournalLine
-from .posting import PostingError, post_payroll_run
+from .models import Account, Expense, ExpenseCategory, ExpenseCategoryAccount, JournalEntry, JournalLine
+from .posting import PostingError, post_expense, post_payroll_run
 
 
 def _make_user(username="accountant"):
@@ -462,3 +463,320 @@ class PostPayrollRunTests(TestCase):
         with self.assertRaises(PostingError):
             post_payroll_run(self.run, created_by=self.user)
         self.assertEqual(JournalEntry.objects.filter(campus=self.campus).count(), 1)  # still just one
+
+
+# --- Session 3: expense auto-posting + accounting views ---
+
+
+
+class PostExpenseTests(TestCase):
+    """Confirms post_expense() for each of the three payment methods,
+    an unmapped category raising a clear error rather than posting
+    something wrong, and idempotency (never a duplicate entry)."""
+
+    def setUp(self):
+        self.user = _make_user("accountant3")
+        self.campus, _ = Campus.objects.get_or_create(name="Main")
+        self.category = ExpenseCategory.objects.get(campus=self.campus, name="Transport")  # seeded by 0005, -> 5120
+
+    def _make_expense(self, method, amount="150.00"):
+        return Expense.objects.create(
+            campus=self.campus, date=date(2026, 9, 15), category=self.category, description="Fuel",
+            amount=Decimal(amount), method=method, recorded_by=self.user,
+        )
+
+    def test_cash_posts_to_cash_on_hand(self):
+        expense = self._make_expense("Cash")
+        entry = post_expense(expense, created_by=self.user)
+        lines = {line.account.code: line for line in entry.lines.all()}
+        self.assertEqual(set(lines), {"5120", "1000"})
+        self.assertEqual(lines["5120"].debit, Decimal("150.00"))
+        self.assertEqual(lines["1000"].credit, Decimal("150.00"))
+
+    def test_bank_posts_to_cash_in_bank(self):
+        expense = self._make_expense("Bank")
+        entry = post_expense(expense, created_by=self.user)
+        lines = {line.account.code: line for line in entry.lines.all()}
+        self.assertEqual(set(lines), {"5120", "1010"})
+        self.assertEqual(lines["1010"].credit, Decimal("150.00"))
+
+    def test_mobile_money_posts_to_mobile_money_float(self):
+        expense = self._make_expense("Mobile Money")
+        entry = post_expense(expense, created_by=self.user)
+        lines = {line.account.code: line for line in entry.lines.all()}
+        self.assertEqual(set(lines), {"5120", "1020"})
+        self.assertEqual(lines["1020"].credit, Decimal("150.00"))
+
+    def test_entry_balances_and_fields_are_correct(self):
+        expense = self._make_expense("Cash", amount="250.00")
+        entry = post_expense(expense, created_by=self.user)
+        self.assertEqual(entry.campus, self.campus)
+        self.assertEqual(entry.entry_date, expense.date)
+        self.assertEqual(entry.description, f"Expense — {expense.id}: Fuel")
+        self.assertEqual(entry.expense, expense)
+        total_debit = sum(line.debit for line in entry.lines.all())
+        total_credit = sum(line.credit for line in entry.lines.all())
+        self.assertEqual(total_debit, total_credit)
+        self.assertEqual(total_debit, Decimal("250.00"))
+
+    def test_unmapped_category_raises_clear_error_not_a_wrong_post(self):
+        unmapped = ExpenseCategory.objects.create(campus=self.campus, name="Brand New Category")
+        expense = Expense.objects.create(
+            campus=self.campus, date=date(2026, 9, 15), category=unmapped, description="x",
+            amount=Decimal("10.00"), method="Cash", recorded_by=self.user,
+        )
+        with self.assertRaises(PostingError):
+            post_expense(expense, created_by=self.user)
+        self.assertFalse(JournalEntry.objects.filter(expense=expense).exists())
+
+    def test_unrecognized_payment_method_raises(self):
+        # Bypasses model-level choices validation deliberately (direct
+        # field assignment, no full_clean()) to confirm post_expense()
+        # itself guards this, not just relying on the choices field.
+        expense = self._make_expense("Cash")
+        expense.method = "Barter"
+        expense.save()
+        with self.assertRaises(PostingError):
+            post_expense(expense, created_by=self.user)
+
+    def test_posting_twice_never_duplicates_the_entry(self):
+        expense = self._make_expense("Cash")
+        first = post_expense(expense, created_by=self.user)
+        second = post_expense(expense, created_by=self.user)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(JournalEntry.objects.filter(expense=expense).count(), 1)
+
+    def test_concurrent_post_race_resolves_to_one_entry_via_db_constraint(self):
+        """Simulates the race the pre-check alone can't close: two calls
+        both pass the "no existing entry" check before either commits.
+        The OneToOneField's DB-level uniqueness is the real guarantee —
+        confirmed here by forcing the pre-check to report "not yet
+        posted" a second time, so the second create() actually hits the
+        constraint rather than being pre-empted by the check."""
+        expense = self._make_expense("Cash")
+        first = post_expense(expense, created_by=self.user)
+
+        with mock.patch(
+            "modules.finance.models.JournalEntry.objects.filter",
+            return_value=JournalEntry.objects.none(),
+        ):
+            second = post_expense(expense, created_by=self.user)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(JournalEntry.objects.filter(expense=expense).count(), 1)
+
+
+class ExpenseCategoryAccountSeedDataTests(TestCase):
+    """Confirms migration 0005 seeded the real ERP category/account
+    mapping for both campuses — not a placeholder set."""
+
+    def test_all_nine_categories_seeded_for_both_campuses(self):
+        names = set(ExpenseCategory.objects.values_list("name", flat=True))
+        self.assertEqual(
+            names,
+            {
+                "Transport", "Fuel", "Rent", "Utilities", "Casual labour",
+                "Repairs & maintenance", "Supplies", "Staff advances", "Miscellaneous",
+            },
+        )
+        self.assertEqual(ExpenseCategory.objects.count(), 18)  # 9 x 2 campuses
+
+    def test_mapping_matches_the_real_erp_data(self):
+        expected = {
+            "Transport": "5120", "Fuel": "5130", "Rent": "5100", "Utilities": "5110",
+            "Casual labour": "5150", "Repairs & maintenance": "5160", "Supplies": "5170",
+            "Staff advances": "1350", "Miscellaneous": "5900",
+        }
+        for name, code in expected.items():
+            category = ExpenseCategory.objects.filter(name=name).first()
+            self.assertEqual(category.account_mapping.account.code, code)
+
+    def test_str_does_not_raise(self):
+        """Regression test: a code-reviewer pass caught a duplicate
+        __str__ definition on ExpenseCategoryAccount — the second
+        (accidental copy-paste of ExpenseCategory's own __str__)
+        silently overrode the first and referenced self.name/self.campus,
+        neither of which exists on this model, so str() raised
+        AttributeError. Nothing called str() on this model anywhere in
+        the test suite, so this went uncaught until manual review."""
+        mapping = ExpenseCategoryAccount.objects.first()
+        self.assertIn("→", str(mapping))
+
+
+class AccountingPermissionSeedDataTests(TestCase):
+    def test_administration_gains_both_new_permissions(self):
+        group = Group.objects.get(name="Administration")
+        codenames = set(
+            group.permissions.filter(content_type__app_label="finance").values_list("codename", flat=True)
+        )
+        self.assertEqual(codenames, {"can_manage_accounts", "can_record_expenses"})
+
+
+class AccountViewTests(TestCase):
+    def setUp(self):
+        self.user = _make_user("accountsmanager")
+        self.user.groups.add(Group.objects.get(name="Administration"))
+        self.nobody = _make_user("plain")
+        self.client.login(username="accountsmanager", password="pw12345")
+
+    def test_list_requires_permission(self):
+        self.client.logout()
+        self.client.login(username="plain", password="pw12345")
+        response = self.client.get("/finance/accounts/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_create_account(self):
+        response = self.client.post(
+            "/finance/accounts/create/",
+            {"code": "9500", "name": "Test Suspense", "category": "Assets", "subtype": "Current Asset", "description": ""},
+        )
+        self.assertRedirects(response, "/finance/accounts/")
+        account = Account.objects.get(code="9500")
+        self.assertEqual(account.created_by, self.user)
+
+    def test_duplicate_code_rejected(self):
+        Account.objects.create(code="9501", name="X", category="Assets", subtype="Y", created_by=self.user)
+        response = self.client.post(
+            "/finance/accounts/create/",
+            {"code": "9501", "name": "Dup", "category": "Assets", "subtype": "Z", "description": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("already exists", response.context["errors"]["code"])
+
+    def test_edit_deactivates_rather_than_deletes(self):
+        account = Account.objects.create(code="9502", name="X", category="Assets", subtype="Y", created_by=self.user)
+        response = self.client.post(
+            f"/finance/accounts/{account.pk}/edit/",
+            {"code": "9502", "name": "X", "category": "Assets", "subtype": "Y", "description": ""},  # is_active omitted
+        )
+        self.assertRedirects(response, "/finance/accounts/")
+        account.refresh_from_db()
+        self.assertFalse(account.is_active)
+        self.assertTrue(Account.objects.filter(pk=account.pk).exists())  # still exists — never deleted
+
+
+class ExpenseViewTests(TestCase):
+    def setUp(self):
+        self.user = _make_user("recorder")
+        self.user.groups.add(Group.objects.get(name="Administration"))
+        self.campus, _ = Campus.objects.get_or_create(name="Main")
+        self.category = ExpenseCategory.objects.get(campus=self.campus, name="Transport")
+        self.client.login(username="recorder", password="pw12345")
+
+    def test_create_requires_permission(self):
+        nobody = _make_user("plain2")
+        self.client.logout()
+        self.client.login(username="plain2", password="pw12345")
+        response = self.client.get("/finance/expenses/create/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_successful_expense_creation_shows_the_posted_entry(self):
+        response = self.client.post(
+            "/finance/expenses/create/",
+            {
+                "campus": self.campus.pk, "category": self.category.pk, "date": "2026-09-15",
+                "description": "Fuel", "amount": "150.00", "method": "Cash", "reference": "",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("entry", response.context)
+        self.assertContains(response, "Posted to the ledger")
+
+    def test_expense_list_filters_by_campus(self):
+        Expense.objects.create(
+            campus=self.campus, date=date(2026, 9, 1), category=self.category, description="A",
+            amount=Decimal("10.00"), method="Cash", recorded_by=self.user,
+        )
+        other_campus, _ = Campus.objects.get_or_create(name="Annex")
+        other_category = ExpenseCategory.objects.get(campus=other_campus, name="Transport")
+        Expense.objects.create(
+            campus=other_campus, date=date(2026, 9, 1), category=other_category, description="B",
+            amount=Decimal("20.00"), method="Cash", recorded_by=self.user,
+        )
+        response = self.client.get(f"/finance/expenses/?campus={self.campus.pk}")
+        self.assertEqual(len(response.context["expenses"]), 1)
+        self.assertEqual(response.context["expenses"][0].description, "A")
+
+    def test_mismatched_campus_and_category_is_rejected(self):
+        """Regression test: a code-reviewer pass flagged that campus and
+        category are independent form fields with no server-side check
+        that they agree — confirms this is now caught explicitly rather
+        than silently creating an Expense whose campus disagrees with
+        its own category's campus."""
+        other_campus, _ = Campus.objects.get_or_create(name="Annex")
+        other_category = ExpenseCategory.objects.get(campus=other_campus, name="Transport")
+        response = self.client.post(
+            "/finance/expenses/create/",
+            {
+                "campus": self.campus.pk, "category": other_category.pk, "date": "2026-09-15",
+                "description": "Fuel", "amount": "150.00", "method": "Cash", "reference": "",
+            },
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered form, not created
+        self.assertIn("different campus", response.context["errors"]["category"])
+        self.assertFalse(Expense.objects.filter(description="Fuel").exists())
+
+
+class ExpenseReceiptUploadURLViewTests(TestCase):
+    """Regression tests: a code-reviewer pass flagged that this endpoint
+    only checked for a non-empty filename — no extension or size check,
+    unlike admissions' UploadURLRequestSerializer (the pattern this
+    endpoint claims to mirror). Now validates both, matching that
+    precedent exactly."""
+
+    def setUp(self):
+        self.user = _make_user("recorder2")
+        self.user.groups.add(Group.objects.get(name="Administration"))
+        self.client.login(username="recorder2", password="pw12345")
+
+    def _post(self, filename, file_size=1000):
+        import json as json_module
+        return self.client.post(
+            "/finance/expenses/receipt-upload-url/",
+            data=json_module.dumps({"filename": filename, "file_size": file_size}),
+            content_type="application/json",
+        )
+
+    def test_disallowed_extension_is_rejected(self):
+        response = self._post("receipt.exe")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported file type", response.json()["detail"])
+
+    def test_oversized_file_is_rejected(self):
+        from django.conf import settings
+        too_big = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1
+        response = self._post("receipt.pdf", file_size=too_big)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("too large", response.json()["detail"])
+
+    def test_allowed_extension_and_size_pass_validation(self):
+        with mock.patch(
+            "modules.finance.storage.create_upload_target",
+            return_value=("some/path.pdf", "https://example.supabase.co/upload/signed"),
+        ):
+            response = self._post("receipt.pdf", file_size=1000)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["storage_path"], "some/path.pdf")
+
+
+class JournalEntryViewTests(TestCase):
+    def setUp(self):
+        self.user = _make_user("viewer")
+        self.user.groups.add(Group.objects.get(name="Administration"))
+        self.campus, _ = Campus.objects.get_or_create(name="Main")
+        self.category = ExpenseCategory.objects.get(campus=self.campus, name="Transport")
+        self.client.login(username="viewer", password="pw12345")
+
+    def test_list_and_detail_render(self):
+        expense = Expense.objects.create(
+            campus=self.campus, date=date(2026, 9, 1), category=self.category, description="A",
+            amount=Decimal("10.00"), method="Cash", recorded_by=self.user,
+        )
+        entry = post_expense(expense, created_by=self.user)
+
+        response = self.client.get("/finance/journal-entries/")
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(f"/finance/journal-entries/{entry.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["lines"]), 2)

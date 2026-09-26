@@ -1,0 +1,26 @@
+{% extends "finance/base.html" %}
+{% block title %}{{ entry.id }}{% endblock %}
+{% block content %}
+<h2 class="font-heading text-2xl text-primary mb-2">{{ entry.id }}</h2>
+<p class="text-sm text-gray-600 mb-6">{{ entry.entry_date }} · {{ entry.campus }} · {{ entry.description }}</p>
+
+<table class="w-full text-sm bg-white border border-brandborder rounded-lg overflow-hidden">
+  <thead>
+    <tr class="text-left text-gray-500 border-b border-brandborder bg-brandbg">
+      <th class="py-2 px-3">Account</th><th class="px-3">Description</th><th class="px-3">Debit</th><th class="px-3">Credit</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for line in lines %}
+    <tr class="border-b border-brandborder">
+      <td class="py-2 px-3">{{ line.account.code }} — {{ line.account.name }}</td>
+      <td class="px-3">{{ line.description }}</td>
+      <td class="px-3">{% if line.debit > 0 %}{{ line.debit }}{% endif %}</td>
+      <td class="px-3">{% if line.credit > 0 %}{{ line.credit }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<a href="{% url 'finance:journal-entry-list' %}" class="text-primary underline mt-4 inline-block">Back to journal entries</a>
+{% endblock %}

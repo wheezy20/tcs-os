@@ -1,0 +1,47 @@
+{% extends "finance/base.html" %}
+{% block title %}{% if is_edit %}Edit Account{% else %}New Account{% endif %}{% endblock %}
+{% block content %}
+<h2 class="font-heading text-2xl text-primary mb-4">{% if is_edit %}Edit Account{% else %}New Account{% endif %}</h2>
+
+<form method="post" class="space-y-4 bg-white border border-brandborder rounded-lg p-6 max-w-lg">
+  {% csrf_token %}
+  <div>
+    <label class="block text-sm font-medium mb-1">Code</label>
+    <input type="text" name="code" value="{{ values.code|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.code %}<p class="text-red-600 text-sm mt-1">{{ errors.code }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Name</label>
+    <input type="text" name="name" value="{{ values.name|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.name %}<p class="text-red-600 text-sm mt-1">{{ errors.name }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Category</label>
+    <select name="category" class="w-full border border-brandborder rounded px-3 py-2">
+      <option value="">Select…</option>
+      {% for value, label in categories %}
+      <option value="{{ value }}" {% if values.category == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    {% if errors.category %}<p class="text-red-600 text-sm mt-1">{{ errors.category }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Subtype</label>
+    <input type="text" name="subtype" value="{{ values.subtype|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.subtype %}<p class="text-red-600 text-sm mt-1">{{ errors.subtype }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Description</label>
+    <textarea name="description" class="w-full border border-brandborder rounded px-3 py-2">{{ values.description|default:'' }}</textarea>
+  </div>
+  {% if is_edit %}
+  <div class="flex items-center gap-2">
+    <input type="checkbox" name="is_active" id="is_active" {% if is_active %}checked{% endif %} />
+    <label for="is_active" class="text-sm">Active (uncheck to deactivate — never deleted)</label>
+  </div>
+  {% endif %}
+  <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+    {% if is_edit %}Save{% else %}Create Account{% endif %}
+  </button>
+</form>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "finance/base.html" %}
+{% block title %}Chart of Accounts{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="font-heading text-2xl text-primary">Chart of Accounts</h2>
+  <a href="{% url 'finance:account-create' %}" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+    New Account
+  </a>
+</div>
+
+<form method="get" class="mb-4">
+  <select name="category" onchange="this.form.submit()" class="border border-brandborder rounded px-3 py-2">
+    <option value="">All categories</option>
+    {% for value, label in categories %}
+    <option value="{{ value }}" {% if selected_category == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+<table class="w-full text-sm bg-white border border-brandborder rounded-lg overflow-hidden">
+  <thead>
+    <tr class="text-left text-gray-500 border-b border-brandborder bg-brandbg">
+      <th class="py-2 px-3">Code</th><th class="px-3">Name</th><th class="px-3">Category</th>
+      <th class="px-3">Subtype</th><th class="px-3">Normal Balance</th><th class="px-3">Active</th><th class="px-3"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for account in accounts %}
+    <tr class="border-b border-brandborder {% if not account.is_active %}opacity-50{% endif %}">
+      <td class="py-2 px-3">{{ account.code }}</td>
+      <td class="px-3">{{ account.name }}</td>
+      <td class="px-3">{{ account.category }}</td>
+      <td class="px-3">{{ account.subtype }}</td>
+      <td class="px-3">{{ account.normal_balance }}</td>
+      <td class="px-3">{% if account.is_active %}Yes{% else %}No{% endif %}</td>
+      <td class="px-3"><a href="{% url 'finance:account-edit' account.pk %}" class="text-primary underline">Edit</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

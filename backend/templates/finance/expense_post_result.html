@@ -1,0 +1,26 @@
+{% extends "finance/base.html" %}
+{% block title %}Expense Recorded{% endblock %}
+{% block content %}
+<h2 class="font-heading text-2xl text-primary mb-4">Expense {{ expense.id }}</h2>
+
+{% if error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-4">
+  Expense saved, but posting to the ledger failed: {{ error }}
+</div>
+{% else %}
+<div class="bg-green-50 border border-green-200 text-green-800 rounded p-3 mb-4">
+  Posted to the ledger as journal entry <a href="{% url 'finance:journal-entry-detail' entry.pk %}" class="underline font-medium">{{ entry.id }}</a>.
+</div>
+{% endif %}
+
+<div class="bg-white border border-brandborder rounded-lg p-6 max-w-lg text-sm space-y-1">
+  <p><span class="text-gray-500">Campus:</span> {{ expense.campus }}</p>
+  <p><span class="text-gray-500">Category:</span> {{ expense.category }}</p>
+  <p><span class="text-gray-500">Date:</span> {{ expense.date }}</p>
+  <p><span class="text-gray-500">Description:</span> {{ expense.description }}</p>
+  <p><span class="text-gray-500">Amount:</span> {{ expense.amount }}</p>
+  <p><span class="text-gray-500">Method:</span> {{ expense.method }}</p>
+</div>
+
+<a href="{% url 'finance:expense-list' %}" class="text-primary underline mt-4 inline-block">Back to expenses</a>
+{% endblock %}

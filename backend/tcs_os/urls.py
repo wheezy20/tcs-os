@@ -35,4 +35,7 @@ urlpatterns = [
     # hr's payroll workflow — staff-facing HTML pages (not an API), so a
     # plain prefix rather than api/hr/. See modules/hr/views.py.
     path("hr/", include("modules.hr.urls")),
+
+    # finance's accounting views — same staff-facing HTML pattern as hr.
+    path("finance/", include("modules.finance.urls")),
 ]

@@ -1,4 +1,5 @@
-"""Posts a Payroll Run to the general ledger (Merge Phase 2, Session 2).
+"""Posts real-world events to the general ledger — a Payroll Run
+(Merge Phase 2, Session 2) and an Expense (Session 3).
 Ports the ERP's post_payroll_run() RPC — specifically the CORRECT,
 post-Tier-2-incident-revert version of the scheme: SSNIT has both an
 employee and an employer side; Tier 2 has ONLY an employee side, no
@@ -29,12 +30,21 @@ import calendar
 from datetime import date
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 
 from modules.hr.models import PayrollRun
 
-from .models import Account, JournalEntry, JournalLine
+from .models import Account, ExpenseCategoryAccount, JournalEntry, JournalLine
+
+# Payment method -> the asset account post_expense() credits. Looked up
+# once, not hardcoded as magic strings through the line-building logic —
+# same discipline as ACCOUNT_CODES below.
+EXPENSE_PAYMENT_METHOD_ACCOUNT_CODES = {
+    "Cash": "1000",          # Cash on Hand
+    "Bank": "1010",           # Cash in Bank
+    "Mobile Money": "1020",   # Mobile Money Float
+}
 
 # code -> what it means in this entry. Looked up once per call (not
 # hardcoded as magic strings scattered through the line-building logic
@@ -172,5 +182,87 @@ def post_payroll_run(payroll_run, created_by):
 
         locked_run.status = "posted"
         locked_run.save()
+
+    return entry
+
+
+def post_expense(expense, created_by):
+    """Auto-posts a single Expense as a TWO-line JournalEntry (Session 3):
+        Dr <the expense's category's mapped account>   expense.amount
+        Cr <the asset account for expense.method>       expense.amount
+    Balanced by construction (one debit, one credit, same amount) — still
+    explicitly confirmed below rather than just assumed, same discipline
+    as post_payroll_run().
+
+    Deliberately called explicitly from the expense-creation VIEW right
+    after Expense.objects.create(), not from a signal or an Expense.save()
+    override — there is no signal-based or save()-override precedent
+    anywhere in this codebase for a creation-time cross-app side effect;
+    the one real precedent (post_payroll_run(), Session 2) is itself
+    called explicitly from PayrollRunApproveView, not from PayrollRun.save().
+    This function follows that same shape.
+
+    Idempotent, not error-on-repeat: unlike post_payroll_run() (a
+    deliberate, repeatable user action worth a clear rejection on
+    re-attempt), this is meant to fire once as an automatic side effect of
+    creating an Expense — a second call (a retry, a duplicate view
+    invocation) returns the SAME JournalEntry rather than raising, via
+    JournalEntry.expense's OneToOneField uniqueness: an application-level
+    pre-check handles the common case, and the field's own DB-level
+    uniqueness (the real guarantee, not just the pre-check) is what a
+    genuine race falls back on — caught as IntegrityError and resolved to
+    the entry that actually won, never left to surface as a raw 500 or,
+    worse, silently create two entries for one expense."""
+    existing = JournalEntry.objects.filter(expense=expense).first()
+    if existing is not None:
+        return existing
+
+    try:
+        mapping = expense.category.account_mapping
+    except ExpenseCategoryAccount.DoesNotExist:
+        raise PostingError(
+            f'"{expense.category}" has no ledger account mapping — map it via '
+            f"ExpenseCategoryAccount before this expense can be posted."
+        )
+    expense_account = mapping.account
+
+    asset_code = EXPENSE_PAYMENT_METHOD_ACCOUNT_CODES.get(expense.method)
+    if asset_code is None:
+        raise PostingError(f"Unrecognized payment method {expense.method!r} — cannot determine which asset account to credit.")
+    asset_account = Account.objects.filter(code=asset_code).first()
+    if asset_account is None:
+        raise PostingError(f"Missing chart-of-accounts row for code {asset_code!r} (payment method {expense.method!r}).")
+
+    if expense_account.normal_balance != "debit":
+        # Sanity check, not a real-world expectation to fail — every
+        # seeded Expenses-category account is debit-normal by definition
+        # (see Account.DEBIT_NORMAL_CATEGORIES), but a category mapped to
+        # the wrong kind of account would silently misstate the ledger
+        # otherwise, so this is confirmed rather than assumed.
+        raise PostingError(
+            f'"{expense_account}" is not a debit-normal account — cannot use it as an expense '
+            f"category's ledger account."
+        )
+
+    try:
+        with transaction.atomic():
+            entry = JournalEntry.objects.create(
+                campus=expense.campus, entry_date=expense.date,
+                description=f"Expense — {expense.id}: {expense.description}",
+                expense=expense, created_by=created_by,
+            )
+            JournalLine.objects.create(
+                entry=entry, position=0, account=expense_account,
+                debit=expense.amount, credit=Decimal("0"), description=expense.description,
+            )
+            JournalLine.objects.create(
+                entry=entry, position=1, account=asset_account,
+                debit=Decimal("0"), credit=expense.amount, description=expense.description,
+            )
+    except IntegrityError:
+        # Someone else's concurrent post_expense() call for this same
+        # expense won the race — return what actually got created, don't
+        # duplicate and don't crash.
+        return JournalEntry.objects.get(expense=expense)
 
     return entry

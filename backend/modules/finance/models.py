@@ -66,6 +66,9 @@ class Account(models.Model):
 
     class Meta:
         ordering = ["code"]
+        permissions = [
+            ("can_manage_accounts", "Can create and edit chart-of-accounts rows"),
+        ]
 
     @property
     def normal_balance(self):
@@ -94,6 +97,21 @@ class ExpenseCategory(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.campus})"
+
+
+class ExpenseCategoryAccount(models.Model):
+    """Maps one ExpenseCategory to the ledger account post_expense()
+    debits for it — mirrors the ERP's expense_category_accounts table.
+    OneToOne, not a plain FK: each category has exactly one designated
+    expense account. A category with no row here can't be auto-posted —
+    post_expense() raises a clear error rather than guessing an account
+    or silently skipping the post (see modules.finance.posting)."""
+
+    category = models.OneToOneField(ExpenseCategory, on_delete=models.CASCADE, related_name="account_mapping")
+    account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="expense_category_mappings")
+
+    def __str__(self):
+        return f"{self.category} → {self.account}"
 
 
 class Expense(models.Model):
@@ -132,6 +150,9 @@ class Expense(models.Model):
 
     class Meta:
         ordering = ["-date", "-recorded_at"]
+        permissions = [
+            ("can_record_expenses", "Can record operating expenses"),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.id:
@@ -151,7 +172,17 @@ class JournalEntry(models.Model):
     same convention as Expense.id. `reverses_entry` mirrors the ERP's
     reverses_entry_id — a self-FK for reversal traceability (an entry
     posted in error is reversed by a new entry, never edited/deleted in
-    place; this field records which original entry a reversal undoes)."""
+    place; this field records which original entry a reversal undoes).
+
+    `expense` (Session 3) traces an auto-posted entry back to the
+    Expense that generated it, and is what post_expense() checks before
+    creating a new entry to guarantee an Expense is never posted twice.
+    No equivalent field exists for PayrollRun (Session 2) — that
+    session's idempotency is enforced entirely through
+    PayrollRun.status gating instead, since a PayrollRun only has one
+    postable moment by construction; Expense has no analogous status
+    field, so it needs its own direct traceability instead of inheriting
+    Session 2's mechanism."""
 
     id = models.CharField(primary_key=True, max_length=20, editable=False)
     campus = models.ForeignKey(Campus, on_delete=models.PROTECT, related_name="journal_entries")
@@ -161,6 +192,11 @@ class JournalEntry(models.Model):
     reverses_entry = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by",
         help_text="Set on a reversal entry, pointing at the original entry it reverses.",
+    )
+    expense = models.OneToOneField(
+        Expense, null=True, blank=True, on_delete=models.PROTECT, related_name="journal_entry",
+        help_text="Set only for entries auto-posted by post_expense() — null for payroll and any "
+        "other kind of entry. See this model's own docstring.",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="journal_entries_created",

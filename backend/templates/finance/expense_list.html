@@ -1,0 +1,57 @@
+{% extends "finance/base.html" %}
+{% block title %}Expenses{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="font-heading text-2xl text-primary">Expenses</h2>
+  <a href="{% url 'finance:expense-create' %}" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+    Record Expense
+  </a>
+</div>
+
+<form method="get" class="flex flex-wrap gap-3 mb-4">
+  <select name="campus" onchange="this.form.submit()" class="border border-brandborder rounded px-3 py-2">
+    <option value="">All campuses</option>
+    {% for campus in campuses %}
+    <option value="{{ campus.pk }}" {% if filters.campus == campus.pk|stringformat:'s' %}selected{% endif %}>{{ campus.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="category" onchange="this.form.submit()" class="border border-brandborder rounded px-3 py-2">
+    <option value="">All categories</option>
+    {% for cat in categories %}
+    <option value="{{ cat.pk }}" {% if filters.category == cat.pk|stringformat:'s' %}selected{% endif %}>{{ cat.name }} ({{ cat.campus }})</option>
+    {% endfor %}
+  </select>
+  <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()" class="border border-brandborder rounded px-3 py-2" />
+  <input type="date" name="date_to" value="{{ filters.date_to }}" onchange="this.form.submit()" class="border border-brandborder rounded px-3 py-2" />
+</form>
+
+<table class="w-full text-sm bg-white border border-brandborder rounded-lg overflow-hidden">
+  <thead>
+    <tr class="text-left text-gray-500 border-b border-brandborder bg-brandbg">
+      <th class="py-2 px-3">ID</th><th class="px-3">Date</th><th class="px-3">Campus</th>
+      <th class="px-3">Category</th><th class="px-3">Description</th><th class="px-3">Amount</th>
+      <th class="px-3">Method</th><th class="px-3"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for expense in expenses %}
+    <tr class="border-b border-brandborder">
+      <td class="py-2 px-3">{{ expense.id }}</td>
+      <td class="px-3">{{ expense.date }}</td>
+      <td class="px-3">{{ expense.campus }}</td>
+      <td class="px-3">{{ expense.category }}</td>
+      <td class="px-3">{{ expense.description }}</td>
+      <td class="px-3">{{ expense.amount }}</td>
+      <td class="px-3">{{ expense.method }}</td>
+      <td class="px-3">
+        {% if expense.journal_entry %}
+        <a href="{% url 'finance:journal-entry-detail' expense.journal_entry.pk %}" class="text-primary underline">{{ expense.journal_entry.id }}</a>
+        {% else %}
+        <span class="text-gray-400">not posted</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

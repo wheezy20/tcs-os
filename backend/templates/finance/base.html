@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>{% block title %}Accounting{% endblock %} — TCS OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet" />
+{# Session 3 — same Tailwind (CDN, no build step) + Alpine toolchain as
+   hr's staff views (Session 6), for the same reason: a staff-facing
+   internal tool, not a public marketing form. See
+   docs/DESIGN.md's frontend-toolchain section — that decision was scoped
+   to hr specifically, so this is a fresh, deliberate repeat of it for
+   finance, not an assumed house default. #}
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          heading: ['Cinzel', 'serif'],
+          body: ['"DM Sans"', 'sans-serif'],
+        },
+        colors: {
+          primary: { DEFAULT: '#005E61', hover: '#0B4C50' },
+          accent: '#11B87A',
+          brandbg: '#F3FAFA',
+          brandborder: '#D5E5E5',
+        },
+      },
+    },
+  };
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="font-body bg-brandbg text-[#1A2E2E] min-h-screen">
+<header class="bg-white border-b border-brandborder px-6 py-4 flex items-center justify-between">
+  <h1 class="font-heading text-xl text-primary">TCS OS — Accounting</h1>
+  {% if user.is_authenticated %}
+  <div class="text-sm text-gray-600">
+    {{ user.get_full_name|default:user.username }}
+    · <a href="/admin/logout/" class="underline hover:text-primary">Log out</a>
+  </div>
+  {% endif %}
+</header>
+<main class="max-w-5xl mx-auto p-6">
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

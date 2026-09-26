@@ -277,6 +277,10 @@ SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="admissions-doc
 # Supabase project. See modules/hr/storage.py.
 HR_DOCUMENT_STORAGE_BUCKET = env("HR_DOCUMENT_STORAGE_BUCKET", default="hr-documents")
 
+# finance's expense receipts (Session 3) — a third private bucket in the
+# same Supabase project. See modules/finance/storage.py.
+FINANCE_RECEIPTS_STORAGE_BUCKET = env("FINANCE_RECEIPTS_STORAGE_BUCKET", default="finance-receipts")
+
 # Fixed letterhead content for every hr-generated document (Appointment
 # Letter, Probation Letter, Contract). Real, confirmed values — TCS OS is
 # single-tenant (one school), so this is a Django setting, not a DB table.

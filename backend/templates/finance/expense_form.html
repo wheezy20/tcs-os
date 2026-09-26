@@ -1,0 +1,116 @@
+{% extends "finance/base.html" %}
+{% block title %}Record Expense{% endblock %}
+{% block content %}
+<h2 class="font-heading text-2xl text-primary mb-4">Record Expense</h2>
+
+{% if errors.non_field %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded p-3 mb-4">{{ errors.non_field }}</div>
+{% endif %}
+
+<form method="post" id="expense-form" class="space-y-4 bg-white border border-brandborder rounded-lg p-6 max-w-lg">
+  {% csrf_token %}
+  <input type="hidden" name="receipt_path" id="receipt_path" value="" />
+
+  <div>
+    <label class="block text-sm font-medium mb-1">Campus</label>
+    <select name="campus" class="w-full border border-brandborder rounded px-3 py-2">
+      <option value="">Select…</option>
+      {% for campus in campuses %}
+      <option value="{{ campus.pk }}" {% if values.campus == campus.pk|stringformat:'s' %}selected{% endif %}>
+        {{ campus.name }}
+      </option>
+      {% endfor %}
+    </select>
+    {% if errors.campus %}<p class="text-red-600 text-sm mt-1">{{ errors.campus }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Category</label>
+    <select name="category" class="w-full border border-brandborder rounded px-3 py-2">
+      <option value="">Select…</option>
+      {% for cat in categories %}
+      <option value="{{ cat.pk }}" {% if values.category == cat.pk|stringformat:'s' %}selected{% endif %}>
+        {{ cat.name }} ({{ cat.campus }})
+      </option>
+      {% endfor %}
+    </select>
+    {% if errors.category %}<p class="text-red-600 text-sm mt-1">{{ errors.category }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Date</label>
+    <input type="date" name="date" value="{{ values.date|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.date %}<p class="text-red-600 text-sm mt-1">{{ errors.date }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Description</label>
+    <input type="text" name="description" value="{{ values.description|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.description %}<p class="text-red-600 text-sm mt-1">{{ errors.description }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Amount</label>
+    <input type="number" step="0.01" name="amount" value="{{ values.amount|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+    {% if errors.amount %}<p class="text-red-600 text-sm mt-1">{{ errors.amount }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Payment Method</label>
+    <select name="method" class="w-full border border-brandborder rounded px-3 py-2">
+      <option value="">Select…</option>
+      <option value="Cash" {% if values.method == "Cash" %}selected{% endif %}>Cash</option>
+      <option value="Mobile Money" {% if values.method == "Mobile Money" %}selected{% endif %}>Mobile Money</option>
+      <option value="Bank" {% if values.method == "Bank" %}selected{% endif %}>Bank</option>
+    </select>
+    {% if errors.method %}<p class="text-red-600 text-sm mt-1">{{ errors.method }}</p>{% endif %}
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Reference (optional)</label>
+    <input type="text" name="reference" value="{{ values.reference|default:'' }}" class="w-full border border-brandborder rounded px-3 py-2" />
+  </div>
+  <div>
+    <label class="block text-sm font-medium mb-1">Receipt (optional — PDF, JPG, or PNG)</label>
+    <input type="file" id="receipt-input" accept=".pdf,.jpg,.jpeg,.png" class="w-full" />
+    <p id="receipt-status" class="text-sm text-gray-500 mt-1"></p>
+  </div>
+  <button type="submit" class="bg-primary hover:bg-primary-hover text-white rounded px-4 py-2 font-medium">
+    Record Expense
+  </button>
+</form>
+
+<script>
+(function () {
+  const input = document.getElementById("receipt-input");
+  const statusEl = document.getElementById("receipt-status");
+  const hiddenField = document.getElementById("receipt_path");
+
+  input?.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+
+    statusEl.textContent = "Uploading…";
+    try {
+      const urlResp = await fetch("{% url 'finance:expense-receipt-upload-url' %}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, file_size: file.size }),
+      });
+      if (!urlResp.ok) {
+        const errBody = await urlResp.json().catch(() => ({}));
+        throw new Error(errBody.detail || "Could not prepare upload.");
+      }
+      const { upload_url, storage_path } = await urlResp.json();
+
+      const putResp = await fetch(upload_url, {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!putResp.ok) throw new Error("Upload failed.");
+
+      hiddenField.value = storage_path;
+      statusEl.textContent = `Uploaded: ${file.name}`;
+    } catch (err) {
+      statusEl.textContent = err.message || "Upload failed — please try again.";
+      input.value = "";
+    }
+  });
+})();
+</script>
+{% endblock %}
