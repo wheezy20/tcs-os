@@ -279,9 +279,10 @@ class ChartOfAccountsSeedDataTests(TestCase):
             self.assertEqual(account.category, category)
 
     def test_5146_was_not_seeded(self):
-        """5146 was named in the original request but doesn't exist
-        anywhere in the ERP's own migrations — confirmed absent rather
-        than invented. See migration 0002's own docstring."""
+        """5146 (Employer Tier 2 Contribution) doesn't exist anywhere in
+        the ERP's own migrations, and was confirmed 2026-09-26 to be a
+        byproduct of the reverted Tier 2 incident (docs/DESIGN.md) —
+        should never be created. See migration 0002's own docstring."""
         self.assertFalse(Account.objects.filter(code="5146").exists())
 
     def test_seeded_rows_have_no_created_by(self):

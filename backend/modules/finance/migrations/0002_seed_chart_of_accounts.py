@@ -16,14 +16,16 @@
 #       5145 Employer SSNIT Contribution
 #         (tcs-erp/supabase/migrations/20260909120000_payslip_employer_ssnit.sql)
 #
-# A 6th payroll account code, 5146, was named in the original request but
-# does not exist anywhere in the ERP's own migrations (confirmed by a
-# full-repo search) — not seeded here. This is very likely a slip in the
-# request rather than a real, missed account: the confirmed-correct
-# Ghana Tier 2 scheme (docs/DESIGN.md's payroll section) is 100%
-# employee-funded, so there is no employer-side Tier 2 contribution for
-# an "Employer Tier 2" expense account to represent in the first place.
-# Flagged for confirmation rather than invented.
+# A 6th payroll account code, 5146 (Employer Tier 2 Contribution), was
+# named in the original request but does not exist anywhere in the
+# ERP's own migrations (confirmed by a full-repo search) — not seeded
+# here. Confirmed 2026-09-26 (not just flagged): it was a byproduct of
+# the reverted Tier 2 incident (docs/DESIGN.md's payroll section — an
+# earlier pass that briefly had the Ghana scheme backwards, since
+# undone), not a real ERP account. The confirmed-correct Ghana Tier 2
+# scheme is 100% employee-funded, so there is no employer-side Tier 2
+# contribution for an "Employer Tier 2" expense account to represent.
+# Should not be created.
 #
 # created_by is left null for every seeded row — mirroring the ERP's own
 # resolution of this identical problem (accounts.created_by dropped to
