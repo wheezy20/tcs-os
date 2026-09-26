@@ -135,8 +135,24 @@ throughout, so no back-pay or compliance issue.
       confirmed absent from the ERP entirely, not invented. Deliberately
       not built this session: `admin.py` registration (deferred to a
       later dedicated session, matching hr's precedent).
-- [ ] Session 2: `post_payroll_run()` logic ported to Python, generating
-      journal entries the same way
+- [x] Session 2: `post_payroll_run()` logic ported to Python — see
+      `docs/JOURNAL.md`'s 2026-09-26 "Finance Session 2" entry. Step 0
+      integration check found `PayrollRun.branch` (hr) was still a plain
+      `CharField`, never migrated to FK `admissions.Campus` despite
+      Session 1 establishing that pattern for finance's own models —
+      migrated it (hr migration 0008), a clean schema-only change since
+      no real payroll has ever run anywhere. New
+      `modules/finance/posting.py::post_payroll_run()` aggregates a
+      run's payslips into one `JournalEntry`, reproducing the ERP's
+      confirmed-correct statutory scheme (SSNIT employee + employer
+      self-balancing pair on 2310, Tier 2 employee-only, no account
+      5146 anywhere) — wired into hr's `PayrollRunApproveView` so
+      approving a run now actually posts the ledger entry, closing the
+      race two concurrent approvals could otherwise hit via the same
+      `select_for_update()` pattern hr Session 6 used for `Payslip`
+      immutability. Deliberately not built this session: no fix to
+      `Payslip._payroll_run_is_posted()`'s own weaker (unlocked) read —
+      recorded as a known gap in `docs/CONSTRAINTS.md`.
 - [ ] Session 3: Accounting views (chart of accounts, expense entry,
       approvals)
 

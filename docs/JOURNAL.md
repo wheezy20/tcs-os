@@ -403,3 +403,99 @@ registering admin in a dedicated later session.
 Verified: `manage.py test` (185/185 — 85 admissions unchanged + 65 hr +
 35 finance new), `manage.py check`, `makemigrations --check --dry-run`
 — all clean. Commit `67e0d2c`.
+
+---
+
+## 2026-09-26 — Finance Session 2: posting Payroll Runs to the general ledger
+
+Step 0, before any posting code was written: an explicit integration
+check on whether `PayrollRun.branch` (hr, Session 1) had already been
+migrated to an FK against `admissions.Campus`, matching the pattern
+Finance Session 1 established for its own models (`Expense`/
+`JournalEntry`/`ExpenseCategory` all FK to `Campus`). It hadn't — still
+a plain `CharField` left over from hr's original build. Migrated it
+(migration 0008, hr) to `ForeignKey(admissions.Campus,
+on_delete=PROTECT)`. A clean schema-only change with no data migration
+needed, since no real payroll has ever run anywhere on this system
+(confirmed against hr's own docs and the fact the ERP itself has only
+ever run test payroll). The create-Payroll-Run view/template moved from
+a free-text branch input to a `Campus` dropdown, and every test/query
+site that referenced `branch` as a plain string was updated to match.
+
+Built `modules/finance/posting.py`'s `post_payroll_run()` — a Python
+port of the ERP's own `post_payroll_run()` RPC, specifically the
+CORRECT, post-Tier-2-incident-revert scheme (see the 2026-09-24 entry
+above and `docs/DESIGN.md`'s payroll section for the incident itself,
+and Finance Session 1's confirmation that account 5146 doesn't exist
+anywhere in the ERP): SSNIT has both an employee side (0.5%, credits
+account 2310) and an employer side (13%, debits account 5145 **and**
+credits that same account 2310 a second time — a self-balancing pair
+sitting on top of the main entry, exactly matching the ERP's own
+design); Tier 2 has only an employee side (5%, credits account 2320) —
+there is no employer-side Tier 2 line or account anywhere in this
+system. Every `Payslip` on a run is aggregated into **one** `JournalEntry`
+(not one per payslip). Account codes are looked up once through a small
+lookup dict (`ACCOUNT_CODES`), never hardcoded as scattered magic
+strings through the line-building logic. Zero-amount lines are skipped
+before the insert is attempted, rather than leaving `JournalLine`'s own
+DB `CheckConstraint` to catch it as a failure. The entry's balance
+(debit == credit) is verified by raising `PostingError` if it doesn't
+hold — deliberately not a bare Python `assert`, since `assert` is
+silently stripped under `python -O` and this is a real financial-
+integrity guarantee, not test scaffolding. This was caught and fixed
+proactively mid-session, before a code-reviewer pass even finished
+reading the file — not a reviewer finding.
+
+Wired into hr's existing `PayrollRunApproveView` (Session 6): approving
+a Ready-for-Review run now actually calls `post_payroll_run()` and
+creates the real `JournalEntry`, rather than Session 6's original
+placeholder behaviour of just flipping status with no ledger effect
+(that session's own view docstring had explicitly flagged this as
+future, out-of-scope work — this session is that work).
+`post_payroll_run()` re-reads the `PayrollRun` row with
+`select_for_update()` inside its own `transaction.atomic()` block and
+re-checks status there before creating anything, closing the same
+cross-request race (two concurrent approval attempts, each holding its
+own independently-fetched `PayrollRun` object) that hr Session 6's
+`Payslip._payroll_run_is_posted()` fix closed for a different code
+path. A code-reviewer pass separately noted — not a regression from
+this session, an observation for a future one — that
+`Payslip._payroll_run_is_posted()` itself actually uses a *weaker*,
+unlocked read (no `select_for_update()`) than this session's own
+pattern, so the two "fresh DB read" checks in the codebase aren't
+actually equivalent in strength. Flagged in `docs/CONSTRAINTS.md` as a
+known, deferred gap rather than left only here.
+
+Tests: a realistic two-employee posting scenario in
+`modules/finance/tests.py` — Emmanuel Ansah's real, independently-
+verified ERP ground-truth payslip (generated via the actual
+`calculate_payslip()`, not hardcoded numbers) plus a second, hand-
+constructed payslip with non-zero fines/iou specifically to exercise
+those two optional journal lines. Every expected aggregate and line
+figure was independently hand-added from each payslip's own stored
+fields, not derived by calling `post_payroll_run()` and trusting its
+own output. Confirms: the entry balances (debit = credit = 10,735.00
+for this scenario), every line's account and amount is correct, the
+SSNIT self-balancing pair produces two genuinely distinct
+`JournalLine` rows on account 2310 (not merged into one), zero-value
+lines are correctly absent, a Draft-status or payslip-less run can't be
+posted, and a second post attempt is rejected cleanly without creating
+a duplicate entry. hr's own `PayrollRunLifecycleTests` (`hr/tests.py`)
+was extended to confirm the real `JournalEntry` appears after using the
+actual HTTP approve view — an integration check on top of finance's own
+unit tests — plus a dedicated test confirming a second approve-view
+POST doesn't create a duplicate.
+
+A code-reviewer pass found no blocking issues. Confirmed correct: the
+SSNIT self-balancing pair, the idempotency/race-closing pattern, that
+migration 0008 is safe against Postgres specifically because hr has
+never been deployed anywhere real yet (confirmed via
+`docs/deployment.md`), the `Campus`-as-branch string interpolation in
+error messages, the one-directional cross-app import (`finance.posting`
+imports `hr.models`; `hr.views` imports `finance.posting`; no cycle),
+and that the statutory scheme in the actual code matches the
+confirmed-correct one (no 5146, no employer Tier 2 line).
+
+Verified: `manage.py test` (192/192 — 85 admissions unchanged + 66 hr +
+41 finance), `manage.py check`, `makemigrations --check --dry-run` —
+all clean. Commit `a19da39`.

@@ -97,6 +97,19 @@ anything here applies everywhere.
   be separated, and the point at which this stops being acceptable
   as-is.
 
+## Ledger posting — known gap, not a regression
+
+- **`Payslip._payroll_run_is_posted()` (hr Session 6) uses a weaker,
+  unlocked DB read than `finance.posting.post_payroll_run()`'s own
+  `select_for_update()` re-check (Finance Session 2)** — both exist to
+  catch the same class of cross-request race (acting on a `PayrollRun`
+  whose status has moved since it was fetched), but only the newer one
+  actually locks the row while re-reading it. Found by a code-reviewer
+  pass during Finance Session 2, not a regression introduced there —
+  see `docs/JOURNAL.md`'s 2026-09-26 "Finance Session 2" entry for the
+  full context. Revisit if a future session touches `Payslip` locking
+  again.
+
 ## Data safety
 
 - This project's Supabase instance is dedicated to TCS OS. It must
