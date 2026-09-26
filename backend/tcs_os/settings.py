@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     # TCS OS modules — one Django app per module, sharing this one project
     "modules.admissions",
     "modules.hr",
+    "modules.finance",
 ]
 
 MIDDLEWARE = [

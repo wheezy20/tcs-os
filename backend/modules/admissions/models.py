@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
+from tcs_os.reference_counter import ReferenceCounter  # noqa: F401 — re-exported, see below
+
 logger = logging.getLogger(__name__)
 
 # Student ID classification prefix, keyed by the grade a student enrolled at
@@ -50,30 +52,14 @@ GRADE_BANDS = {
 }
 
 
-class ReferenceCounter(models.Model):
-    """Backs the sequential portion of every human-readable reference number
-    (Inquiry/Application reference numbers, Student ID roll numbers). One row
-    per (kind, year[, classification]) scope — e.g. key="INQ-2026" or
-    key="STUDENT-26-01". select_for_update() makes concurrent increments of
-    the same key safe: two simultaneous submissions can't be handed the same
-    sequence number, since the second transaction blocks on the row lock
-    until the first commits. See docs/admissions/02-stack-and-schema.md."""
-
-    key = models.CharField(max_length=50, unique=True)
-    next_value = models.PositiveIntegerField(default=1)
-
-    def __str__(self):
-        return f"{self.key} → {self.next_value}"
-
-    @classmethod
-    def next_for(cls, key):
-        with transaction.atomic():
-            cls.objects.get_or_create(key=key, defaults={"next_value": 1})
-            counter = cls.objects.select_for_update().get(key=key)
-            value = counter.next_value
-            counter.next_value = value + 1
-            counter.save(update_fields=["next_value"])
-            return value
+# ReferenceCounter moved to tcs_os/reference_counter.py (Merge Phase 2
+# Session 1 — now shared with the finance module's JE-/EXP- numbering)
+# — imported above and re-exported here so every existing
+# `from .models import ReferenceCounter` / `admissions.models.ReferenceCounter`
+# call site (admin.py, tests.py, reset_admissions_data.py) keeps working
+# unchanged. Its Meta.app_label = "admissions" keeps it on this app's
+# existing migration history/table — this is a pure file relocation,
+# not a schema change.
 
 
 def _next_inquiry_reference():
