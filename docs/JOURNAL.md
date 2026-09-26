@@ -499,3 +499,138 @@ confirmed-correct one (no 5146, no employer Tier 2 line).
 Verified: `manage.py test` (192/192 — 85 admissions unchanged + 66 hr +
 41 finance), `manage.py check`, `makemigrations --check --dry-run` —
 all clean. Commit `a19da39`.
+
+---
+
+## 2026-09-26 — Finance Session 3: accounting views + expense auto-posting
+
+Two real gaps found between the task spec and actual repo state this
+session, both resolved with stated reasoning rather than silently: (1)
+no source-tracing mechanism existed on `JournalEntry` at all from
+Session 2 — idempotency there works purely via `PayrollRun.status`
+gating, which has no equivalent for `Expense`. Added a nullable
+`OneToOneField` `expense` on `JournalEntry` specifically for `Expense`
+idempotency, per the spec's own explicit fallback instruction. (2)
+Session 1 never actually seeded any `ExpenseCategory` rows — only
+`Account` got a seed migration. This session found the real ERP data
+(the same source file already read for Session 1's chart of accounts)
+and seeded the real 9 category names (Transport, Fuel, Rent, Utilities,
+Casual labour, Repairs & maintenance, Supplies, Staff advances,
+Miscellaneous) plus their real account mapping, for **both** of TCS
+OS's existing `Campus` rows (Main, Annex) — an explicit extrapolation
+from the ERP's own single-branch-at-the-time data, since TCS OS already
+supports two campuses unlike the ERP when that data was written.
+Flagged in the migration's own comment, not silently assumed.
+
+Built new `can_manage_accounts` (on `Account`) and `can_record_expenses`
+(on `Expense`) permissions, granted to the existing Administration group
+only — no separate Accountant group this session, explicitly the same
+reasoning as hr Session 6's self-approval-boundary decision
+(`docs/CONSTRAINTS.md`): don't build role separation nobody can use yet.
+New `ExpenseCategoryAccount` model (`OneToOneField` to
+`ExpenseCategory`) maps each category to its ledger account, mirroring
+the ERP's own `expense_category_accounts` table.
+
+`modules/finance/posting.py` gained `post_expense()` alongside the
+existing `post_payroll_run()` — auto-posts a simple two-line entry
+(debit the expense category's mapped account, credit the payment
+method's asset account: 1000 Cash on Hand / 1010 Cash in Bank / 1020
+Mobile Money Float) called **explicitly** from the expense-creation
+view, deliberately not via a Django signal or an `Expense.save()`
+override — there is no signal/save-override precedent anywhere in this
+codebase for a creation-time cross-app side effect; the one real
+precedent (`post_payroll_run()`, Session 2) is itself called explicitly
+from a view, not from `PayrollRun.save()`, so `post_expense()` follows
+that same established shape. Idempotency here is deliberately **not**
+"reject a second attempt" like `post_payroll_run()`'s — a second call to
+`post_expense()` for the same `Expense` returns the same `JournalEntry`
+rather than raising, since this is meant to fire once as an automatic
+side effect of `Expense` creation (not a repeatable, deliberate user
+action the way approving a payroll run is) — backed by
+`JournalEntry.expense`'s real DB-level uniqueness
+(`OneToOneField`), not just an application-level pre-check, confirmed
+via a test that mocks only the pre-check so a genuine race is
+exercised.
+
+New views (`modules/finance/views.py`): chart of accounts (list,
+filterable by category; create/edit gated on `can_manage_accounts`;
+accounts are deactivated via `is_active`, never deleted — no delete
+route exists at all), expense entry (a form gated on
+`can_record_expenses`, with an optional receipt upload to a new private
+"finance-receipts" Supabase bucket using the exact same two-step
+signed-URL handshake as admissions' document uploads; on success, shows
+the resulting journal entry's id on the confirmation page so the user
+can see the posting actually happened), an expense list (filterable by
+campus/category/date range, each row linking to its journal entry), and
+a read-only journal entries list/detail that shows entries from both
+`post_payroll_run()` and `post_expense()` together.
+
+Also extracted the staff-facing-view auth mixin (previously hr-only,
+called `HrStaffRequiredMixin`) into a new shared
+`backend/tcs_os/staff_views.py` (`StaffRequiredMixin`), following the
+exact same "extract shared code, don't duplicate across module apps"
+pattern already used for `tcs_os/text_merge.py` (hr Session 7) and
+`tcs_os/reference_counter.py` (finance Session 1) — `hr/views.py`'s
+`HrStaffRequiredMixin` is now a thin subclass of the shared one, not a
+second full implementation, and all 66 hr tests (including the ones
+that specifically exercise the 403-vs-redirect-loop distinction this
+mixin provides) still pass unchanged, confirming it's a faithful
+extraction.
+
+A code-reviewer pass found two real bugs and two worth-fixing items,
+**all fixed before this commit** (not left as follow-up work):
+
+1. **(bug)** A duplicate `__str__` method on the new
+   `ExpenseCategoryAccount` model — a copy-paste leftover of
+   `ExpenseCategory`'s own `__str__`, referencing `self.name`/
+   `self.campus` which don't exist on `ExpenseCategoryAccount`, silently
+   overriding the correct definition (Python allows redefining a method
+   in the same class body) and would raise `AttributeError` the instant
+   anything called `str()` on this model (Django admin, a template, a
+   log line) — nothing in the original test suite happened to call
+   `str()` on it, so this went uncaught until manual review. Deleted the
+   bad second definition, added a regression test. Worth remembering as
+   its own cautionary example: a bug that a full green test suite
+   (216/216 at the time) did not catch, because nothing in it happened
+   to exercise `str()` on that one model.
+2. **(bug)** The receipt-upload endpoint
+   (`ExpenseReceiptUploadURLView`) only checked for a non-empty
+   filename — missing layers 2 and 3 of this project's documented
+   three-layer file-upload-validation convention (`docs/CONSTRAINTS.md`:
+   client, serializer/view, and the storage bucket itself). Added
+   extension and client-declared-`file_size` validation to the view
+   (mirroring admissions' `UploadURLRequestSerializer` exactly) and a
+   new `configure_bucket_limits()` function in `finance/storage.py` plus
+   a new `configure_finance_storage_bucket` management command
+   (mirroring admissions' and hr's own equivalents) for the
+   bucket-level lock-down — the real, unbypassable enforcement layer.
+   Added tests for both new validation checks.
+3. **(worth-fixing)** `ExpenseCreateView` never checked that the
+   submitted campus and category actually agreed with each other
+   (they're independent form fields; nothing stopped submitting
+   campus=Main with a category that only exists for Annex) — added an
+   explicit mismatch check with a clear form error, plus a regression
+   test.
+4. **(worth-fixing)** Migration 0005's fallback for a missing mapped
+   account (should never happen, given migration 0002's own dependency
+   ordering, but if it ever did) silently skipped that category with
+   only a code comment explaining why — changed to print a loud warning
+   during migrate, consistent with this project's "never silently
+   no-op" discipline already stated in `posting.py`'s own `PostingError`
+   docstring.
+
+Checked whether the three-layer file-upload-validation rule (item 2
+above) was already written down anywhere as its own stated constraint,
+or only ever demonstrated in code — it's already present in
+`docs/CONSTRAINTS.md`'s "Lessons that cost something once" section
+(added in the original doc-restructuring commit `bf2a05c`, before this
+session), so no new constraint entry was needed; this session is simply
+the rule's second real demonstration (admissions was the first).
+
+Verified: `manage.py test` (216/216 — 85 admissions + 66 hr + 65
+finance), `manage.py check`, `makemigrations --check --dry-run` (clean).
+A real end-to-end manual smoke test was also run against every new view
+via Django's test `Client` before the formal test suite was written
+(account create/edit/deactivate, expense create → auto-post →
+confirmation page showing the real journal entry, expense list, journal
+entry list/detail). Commit `4b4337b`.

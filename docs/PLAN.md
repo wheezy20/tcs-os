@@ -153,8 +153,29 @@ throughout, so no back-pay or compliance issue.
       immutability. Deliberately not built this session: no fix to
       `Payslip._payroll_run_is_posted()`'s own weaker (unlocked) read —
       recorded as a known gap in `docs/CONSTRAINTS.md`.
-- [ ] Session 3: Accounting views (chart of accounts, expense entry,
-      approvals)
+- [x] Session 3: Accounting views (chart of accounts, expense entry) —
+      see `docs/JOURNAL.md`'s 2026-09-26 "Finance Session 3" entry. New
+      `can_manage_accounts`/`can_record_expenses` permissions
+      (Administration only, no separate Accountant group yet — same
+      reasoning as hr Session 6); new `ExpenseCategoryAccount` model
+      mapping each category to its ledger account; real ExpenseCategory
+      seed data (Session 1 never actually seeded any) for both Main and
+      Annex campuses. New `modules/finance/posting.py::post_expense()`
+      auto-posts on expense creation, called explicitly from the view
+      like `post_payroll_run()` — but idempotent by returning the same
+      `JournalEntry` on a repeat call (via a new `JournalEntry.expense`
+      OneToOneField) rather than rejecting, since this is an automatic
+      creation-time side effect, not a repeatable user action. New
+      chart-of-accounts, expense entry/list, and journal entry
+      list/detail views; a new `finance-receipts` Supabase bucket
+      (same signed-URL pattern as admissions); extracted the
+      hr-only staff-view auth mixin into shared
+      `tcs_os/staff_views.py`. A code-reviewer pass caught and fixed
+      before commit: a duplicate/broken `ExpenseCategoryAccount.__str__`
+      (undetected by the existing test suite), a missing layer-2/3
+      upload validation on the receipt endpoint, a missing
+      campus/category cross-check on expense creation, and a silent
+      under-seed fallback in migration 0005 (now a loud warning).
 
 ### Merge Phase 3 — Data migration & validation
 
