@@ -332,3 +332,74 @@ this session created the bucket. This is a deployment-runbook item
 pattern) rather than a `docs/CONSTRAINTS.md` hard rule, so it isn't
 logged there — worth adding to `docs/deployment.md` once hr gets its own
 deploy step.
+
+---
+
+## 2026-09-26 — Finance Session 1: chart of accounts + double-entry bookkeeping models
+
+Opened Merge Phase 2 with a new `backend/modules/finance/` app
+(`modules.finance` import path, `finance` app label per `CLAUDE.md`'s
+convention). Before writing any finance-specific code, relocated
+`ReferenceCounter` out of `modules/admissions/models.py` into a new
+shared `backend/tcs_os/reference_counter.py`, so both admissions and
+finance share one atomic sequential-numbering utility — the same
+"extract shared code, don't cross-import between module apps" pattern
+already established for `tcs_os/text_merge.py` in HR Session 7.
+`Meta.app_label = "admissions"` on the relocated class keeps it on
+admissions' existing migration history/table regardless of where its
+Python source now lives. Confirmed a pure relocation, not a behavior
+change: `makemigrations --check` reported zero changes, and all 85
+existing admissions tests passed completely unchanged.
+
+Models: `Account` (`normal_balance` implemented as a derived
+`@property`, never stored, so it can't drift from `category` — Django
+has no portable equivalent to the ERP's Postgres generated column);
+`ExpenseCategory` (campus-scoped, `unique_together` with campus);
+`Expense` and `JournalEntry` (real text primary keys,
+`"EXP-YYYY-MM-####"`/`"JE-YYYY-MM-####"`, generated once in `save()` via
+the shared `ReferenceCounter`, keyed off the record's own accounting
+date rather than "now"); `JournalLine` (the three double-entry
+integrity rules — debit >= 0, credit >= 0, never both positive, never
+both zero — enforced at both `clean()` and a DB `CheckConstraint`, with
+the constraint being the real guarantee, matching the two-layer
+validation pattern already documented from HR Session 6/7). `PROTECT`
+used on every FK carrying real referential weight, matching this
+project's "never silently orphan a financial record" convention.
+`Account.created_by` was made nullable — not part of the original
+spec — after finding the ERP's own migrations resolve the identical
+problem the same way for its system-seeded rows; read directly from the
+ERP's migration file rather than assumed.
+
+The chart-of-accounts seed migration (0002) hit a real blocker
+mid-session: the ERP migration files the original request named don't
+exist in this repo, and nothing in this conversation had previously
+extracted the account data. Rather than approximate from a
+conversational restatement, the actual files were located and read
+directly from the sibling ERP project on this machine
+(`/home/wheezy20/projects/tcs-erp/supabase/migrations/`):
+`20260805080000_chart_of_accounts.sql` (table structure only, no seed
+rows), `20260819090000_seed_gap_accounts_expense_categories.sql` (the
+real 41-row base chart), `20260909110000_post_payroll_run.sql` (adds
+accounts 2310/2320/2330/4910), and
+`20260909120000_payslip_employer_ssnit.sql` (adds account 5145). The
+seed migration loads all 46 accounts from that verified data — the 41
+base accounts plus the 5 payroll-related accounts, seeded ahead of
+Session 2's ledger-posting work even though hr doesn't post to the
+ledger yet. One account code from the original request, 5146, was
+searched for across the entire ERP repository and does not exist
+anywhere — not seeded, flagged in the migration's own docstring rather
+than invented, and noted as consistent with Ghana's Tier 2 pension
+scheme being 100% employee-funded (an "Employer Tier 2" expense account
+wouldn't make sense as a concept regardless). Same treatment as the
+Session 5 allowance/overtime test-coverage gap: a decision made with
+evidence, not a stub left in place of missing data.
+
+No `admin.py` registration this session — models and tests only. A
+code-reviewer pass flagged this as reading like an oversight; recorded
+here as a deliberate scope decision instead, matching hr's own
+precedent (Session 4/6) of building models and tests first and
+registering admin in a dedicated later session.
+
+Verified: `manage.py test` (185/185 — 85 admissions unchanged + 65 hr +
+35 finance new), `manage.py check`, `makemigrations --check --dry-run`
+— all clean. Commit `67e0d2c`.

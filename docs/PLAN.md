@@ -122,8 +122,19 @@ throughout, so no back-pay or compliance issue.
 
 ### Merge Phase 2 — Finance module port
 
-- [ ] Session 1: Models (`Expense`, `ExpenseCategory`, `Account`,
-      `JournalEntry`) from the ERP schema
+- [x] Session 1: Models (`Account`, `ExpenseCategory`, `Expense`,
+      `JournalEntry`, `JournalLine`) from the ERP schema — see
+      `docs/JOURNAL.md`'s 2026-09-26 entry. New `backend/modules/finance/`
+      app; `ReferenceCounter` relocated out of admissions into a shared
+      `tcs_os/reference_counter.py` (pure relocation, zero admissions
+      regressions); real double-entry integrity enforced at both
+      `clean()` and a DB `CheckConstraint`; chart-of-accounts seed
+      migration (0002) loads 46 real accounts sourced by reading the
+      ERP's own migration files directly off this machine (the files the
+      original request named don't exist in this repo) — account 5146
+      confirmed absent from the ERP entirely, not invented. Deliberately
+      not built this session: `admin.py` registration (deferred to a
+      later dedicated session, matching hr's precedent).
 - [ ] Session 2: `post_payroll_run()` logic ported to Python, generating
       journal entries the same way
 - [ ] Session 3: Accounting views (chart of accounts, expense entry,
