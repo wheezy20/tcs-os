@@ -121,6 +121,13 @@ anything here applies everywhere.
   merge's Phase 3 (data migration) deliberately moves specific config
   data across, on purpose, via a reviewed management command — never by
   pointing one project's connection string at another's data.
+- **`seed_parity_test_employees` and `run_parity_test_payroll`
+  (`backend/modules/hr/management/commands/`, Merge Phase 3 Session 1)
+  must only ever be run against a dev/test database** — approving the
+  parity run's `PayrollRun` posts a real, immutable `JournalEntry` to
+  the finance ledger via `post_payroll_run()`. Stated in both commands'
+  own docstrings; recorded here as the load-bearing constraint, not just
+  a code comment.
 
 ## Branding
 

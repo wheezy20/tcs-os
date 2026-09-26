@@ -634,3 +634,94 @@ via Django's test `Client` before the formal test suite was written
 (account create/edit/deactivate, expense create → auto-post →
 confirmation page showing the real journal entry, expense list, journal
 entry list/detail). Commit `4b4337b`.
+
+## 2026-09-26 — Merge Phase 3 Session 1: payroll parity validation (2 of 4 employees confirmed)
+
+Read the real ERP dummy seed data directly from
+`~/projects/tcs-erp/supabase/seed.sql` (the `insert into public.employees`
+and `insert into public.employee_pay_config` blocks) — four employees:
+Emmanuel Ansah (Head Teacher, basic 6,500, pays all three statutory
+deductions), Ebenezer Addo (Accountant, basic 4,200, pays all three),
+Ama Owusu (Class Teacher, basic 2,800, pays all three), Kojo Boadu
+(Teaching Assistant, basic 1,500, pays none — `pays_ssnit`/`tier2`/`paye`
+all false).
+
+Added two new management commands, not migrations, to
+`backend/modules/hr/management/commands/`:
+
+- `seed_parity_test_employees.py` — idempotent (`get_or_create`-keyed),
+  creates `Employee` + `EmployeePayConfig` rows for the four employees
+  above, copied verbatim from the ERP data. Three fields have no ERP
+  source and are flagged in the command's own docstring as reasoned
+  inferences rather than presented as verbatim: `payment_method="Bank
+  Transfer"` (ERP has bank/account number but no `payment_method`
+  column), `employment_type="Full-time"`, and `start_date` (ERP has no
+  hire-date column at all). None of the three feed `calculate_payslip()`,
+  so none affect the parity comparison itself.
+- `run_parity_test_payroll.py` — drives one real `PayrollRun` (Main
+  campus, September 2026 — the same month already used for Emmanuel
+  Ansah's confirmed ERP ground truth in `docs/DESIGN.md`) through the
+  actual Session 6 staff-facing views via `django.test.Client` with
+  `force_login` (create → generate payslips → submit for review →
+  approve & post) — deliberately the real user-facing workflow, not a
+  script calling `calculate_payslip()`/`PayrollRun.objects.create()`
+  directly, since Session 5's unit tests already cover the calculation
+  in isolation. It temporarily adds a scripted `parity_test_runner` user
+  to the real "Administration" group (already carrying both
+  `hr.can_process_payroll` and `hr.can_approve_payroll` per migration
+  0004) only for the run's duration, removing that membership again in a
+  `finally` block even on error — because approving the run calls the
+  real `finance.posting.post_payroll_run()`, which creates a real,
+  immutable `JournalEntry` in the actual finance ledger. Proving that
+  real side effect is the point of a parity check, but it means this
+  command must only ever run against a dev/test database, never one
+  holding real financial data — stated explicitly in the command's own
+  docstring, found and required by a code-reviewer pass before this was
+  considered done.
+
+Ran the full flow for real: `seed_parity_test_employees` then
+`run_parity_test_payroll`. Comparison table:
+
+- **Emmanuel Ansah** — SSNIT 32.50, Tier 2 325.00, PAYE 1,134.13, net pay
+  5,008.37, SSNIT employer 845.00 — **parity confirmed**, matching
+  `docs/DESIGN.md`'s independently-confirmed ERP ground truth exactly, to
+  the cent.
+- **Ebenezer Addo** — SSNIT 21.00, Tier 2 210.00, PAYE 590.75, net pay
+  3,378.25, SSNIT employer 546.00 — **needs confirmation**: no verified
+  real ERP payslip exists anywhere in this project to compare against.
+- **Ama Owusu** — SSNIT 14.00, Tier 2 140.00, PAYE 353.80, net pay
+  2,292.20, SSNIT employer 364.00 — **needs confirmation**, same reason.
+- **Kojo Boadu** — all statutory deductions 0.00, net pay 1,500.00
+  (pays no SSNIT/Tier 2/PAYE) — **needs confirmation**, same reason.
+
+A code-reviewer pass on both new command files caught two real issues
+before this was committed, both fixed: (1) the finance-ledger-posting
+side effect and the temporary Administration group grant were
+undocumented — fixed by adding the explicit dev/test-only docstring
+warning above and the `try`/`finally` that unconditionally removes the
+group membership after the run; (2) the seed command's docstring
+undercounted invented fields (only flagged `payment_method`, not
+`employment_type` or `start_date`, which are equally invented — the ERP
+schema has neither column) — fixed by expanding the docstring to flag
+all three. Also tightened the generate-payslips step to check for HTTP
+200 before proceeding (previously proceeded regardless), and added a
+catch-all branch for any `PayrollRun.status` the script doesn't
+recognize instead of silently printing an empty comparison table.
+
+Verified: `manage.py check` clean, `makemigrations --check --dry-run`
+reports no changes (management commands only — no schema touched this
+session). Full `manage.py test` run: 216 tests, 3 initially failed with
+`psycopg2.OperationalError` ("SSL connection has been closed
+unexpectedly" / "connection already closed") against the project's
+remote Supabase-hosted dev database — all three in
+`modules.hr.tests.GenerateDocumentTests`, the slowest tests due to real
+WeasyPrint PDF rendering. Re-running that class in isolation gave 7/7
+passing in under 30 seconds, confirming the 3 failures were a transient
+connection drop against the remote pooler during the ~25-minute full
+run, not a real regression.
+
+Per `docs/PLAN.md`'s Merge Phase 3 Session 1 scope, explicitly did not
+touch PLAN.md's cutover language — that's Session 3's job, gated on a
+full-parity comparison table, which this session does not yet have
+(only 1 of 4 employees is confirmed; the other 3 need a real ERP
+payslip pulled before they count).

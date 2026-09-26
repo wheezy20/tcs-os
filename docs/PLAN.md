@@ -179,11 +179,28 @@ throughout, so no back-pay or compliance issue.
 
 ### Merge Phase 3 — Data migration & validation
 
-- [ ] Session 1: Management command to migrate any real ERP config/seed
-      data into TCS OS (no real payroll history exists yet — the ERP has
-      only run test payroll)
+- [x] Session 1: Parity validation between the ERP and TCS OS payroll —
+      see `docs/JOURNAL.md`'s 2026-09-26 "Merge Phase 3 Session 1" entry.
+      Turned out to be a parity check of the real payroll workflow
+      rather than a config/seed-data migration (no real payroll history
+      exists in the ERP to migrate — it has only ever run test payroll),
+      so this session seeded the ERP's four test employees verbatim via
+      a new `seed_parity_test_employees` management command, then drove
+      one real `PayrollRun` through the actual Session 6 staff-facing
+      views end-to-end via a new `run_parity_test_payroll` command.
+      Result: Emmanuel Ansah's payslip (SSNIT, Tier 2, PAYE, net pay,
+      SSNIT employer) matches `docs/DESIGN.md`'s independently-confirmed
+      ERP ground truth exactly, to the cent; the other three employees
+      (Ebenezer Addo, Ama Owusu, Kojo Boadu) produced payslips but have
+      no verified real ERP payslip anywhere in this project to compare
+      against yet, so they're flagged "needs confirmation," not assumed
+      correct. Both new commands are dev/test-database-only (approving
+      the run posts a real `JournalEntry` to the finance ledger) —
+      stated in their own docstrings.
 - [ ] Session 2: A real payroll month run in both systems in parallel,
-      line-by-line payslip comparison
+      line-by-line payslip comparison, extending Session 1's parity
+      check to full confirmation for all four employees (currently only
+      Emmanuel Ansah is confirmed)
 - [ ] Session 3: Cutover — retire the ERP's Cloudflare Worker and its
       Supabase project
 
