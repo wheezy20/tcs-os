@@ -1,0 +1,176 @@
+"""Posts a Payroll Run to the general ledger (Merge Phase 2, Session 2).
+Ports the ERP's post_payroll_run() RPC — specifically the CORRECT,
+post-Tier-2-incident-revert version of the scheme: SSNIT has both an
+employee and an employer side; Tier 2 has ONLY an employee side, no
+employer Tier 2 line anywhere (see docs/DESIGN.md's payroll section for
+the full incident writeup — account 5146 "Employer Tier 2 Contribution"
+does not exist and must never be created, confirmed 2026-09-26).
+
+This module deliberately imports modules.hr.models (PayrollRun) — a
+real, intentional coupling, unlike the "don't cross-import between
+module apps" discipline that governs truly generic shared code
+(tcs_os.text_merge, tcs_os.reference_counter). Bridging hr's payroll
+output into finance's ledger is this session's whole purpose, not
+incidental coupling — the same way finance.models already imports
+modules.admissions.models.Campus. The dependency runs one way only:
+modules.hr never imports anything from modules.finance (views.py calls
+into this module, not the reverse), so there is no circular import.
+
+ONE aggregated JournalEntry per run (not one per payslip), matching the
+ERP's own post_day_close_journal_entry()-style aggregation. Only
+callable when payroll_run.status == "ready_for_review"; the
+select_for_update() re-check inside the transaction is the same
+fresh-DB-read discipline Payslip._payroll_run_is_posted() already
+established in hr Session 6, closing the same class of cross-request
+race rather than trusting an in-memory status.
+"""
+
+import calendar
+from datetime import date
+from decimal import Decimal
+
+from django.db import transaction
+from django.db.models import Sum
+
+from modules.hr.models import PayrollRun
+
+from .models import Account, JournalEntry, JournalLine
+
+# code -> what it means in this entry. Looked up once per call (not
+# hardcoded as magic strings scattered through the line-building logic
+# below) — see _get_accounts().
+ACCOUNT_CODES = {
+    "salaries_expense": "5140",       # Dr — gross pay
+    "salaries_payable": "2300",       # Cr — net pay, accrued not yet disbursed
+    "ssnit_payable": "2310",          # Cr — both employee- and employer-side SSNIT withheld/owed
+    "employer_ssnit_expense": "5145",  # Dr — employer's 13% SSNIT cost
+    "tier2_payable": "2320",          # Cr — employee-side Tier 2 withheld (no employer side exists)
+    "paye_payable": "2330",           # Cr — PAYE withheld
+    "staff_advances": "1350",         # Cr — IOU repayment reduces this asset
+    "staff_fines_recovered": "4910",  # Cr — fines deducted from pay
+}
+
+
+class PostingError(Exception):
+    """Raised when a PayrollRun can't be posted as requested — wrong
+    status (not Ready for Review, or already Posted), no payslips on
+    the run, or a required chart-of-accounts row is missing. Never
+    silently no-ops or posts a partial/wrong entry."""
+
+
+def _get_accounts():
+    accounts = Account.objects.in_bulk(ACCOUNT_CODES.values(), field_name="code")
+    missing = [code for code in ACCOUNT_CODES.values() if code not in accounts]
+    if missing:
+        raise PostingError(
+            f"Missing required chart-of-accounts row(s): {', '.join(missing)}. "
+            f"Seed migration 0002 should have created these — check the finance app's migrations ran."
+        )
+    return {key: accounts[code] for key, code in ACCOUNT_CODES.items()}
+
+
+def _build_lines(aggregates, accounts):
+    """Returns a list of (account, debit, credit, description) tuples,
+    omitting any line whose amount would be zero — a zero-amount line
+    would fail JournalLine's own "not both zero" CHECK constraint at the
+    DB level regardless, but skip it up front rather than attempting
+    (and relying on) that insert failure."""
+    lines = [
+        (accounts["salaries_expense"], aggregates["gross"], Decimal("0"), "Gross pay"),
+        (accounts["salaries_payable"], Decimal("0"), aggregates["net"], "Net pay payable"),
+    ]
+
+    if aggregates["ssnit_employee"] > 0:
+        lines.append((accounts["ssnit_payable"], Decimal("0"), aggregates["ssnit_employee"], "SSNIT withheld (employee)"))
+
+    if aggregates["ssnit_employer"] > 0:
+        # A self-balancing pair on top of the main entry, on the SAME
+        # 2310 account as the employee-side credit above — matches the
+        # ERP's exact design: 2310 carries both the withheld employee
+        # portion and the employer's own cost, from opposite sides.
+        lines.append((accounts["employer_ssnit_expense"], aggregates["ssnit_employer"], Decimal("0"), "Employer SSNIT contribution"))
+        lines.append((accounts["ssnit_payable"], Decimal("0"), aggregates["ssnit_employer"], "Employer SSNIT contribution"))
+
+    if aggregates["tier2"] > 0:
+        lines.append((accounts["tier2_payable"], Decimal("0"), aggregates["tier2"], "Tier 2 withheld"))
+
+    if aggregates["paye"] > 0:
+        lines.append((accounts["paye_payable"], Decimal("0"), aggregates["paye"], "PAYE withheld"))
+
+    if aggregates["iou"] > 0:
+        # A credit here reduces the Advances to Staff asset — repayment,
+        # not a new advance. Matches the ERP's own comment on this line.
+        lines.append((accounts["staff_advances"], Decimal("0"), aggregates["iou"], "Staff advance recovery"))
+
+    if aggregates["fines"] > 0:
+        lines.append((accounts["staff_fines_recovered"], Decimal("0"), aggregates["fines"], "Staff fines recovered"))
+
+    return lines
+
+
+def post_payroll_run(payroll_run, created_by):
+    """Aggregates every Payslip on payroll_run into ONE JournalEntry (not
+    one per payslip), flips the run to Posted, and returns the entry.
+    Raises PostingError — never silently no-ops — if the run isn't
+    Ready for Review, has no payslips, or a required account is missing.
+    """
+    if payroll_run.status != "ready_for_review":
+        raise PostingError(
+            f'Cannot post "{payroll_run}" — status is {payroll_run.get_status_display()}, not Ready for Review.'
+        )
+
+    aggregates = payroll_run.payslips.aggregate(
+        gross=Sum("gross_salary"), net=Sum("net_pay"),
+        ssnit_employee=Sum("ssnit"), ssnit_employer=Sum("ssnit_employer"),
+        tier2=Sum("tier2"), paye=Sum("paye"), fines=Sum("fines"), iou=Sum("iou"),
+    )
+    if aggregates["gross"] is None:
+        raise PostingError(f'"{payroll_run}" has no payslips to post.')
+
+    accounts = _get_accounts()
+    lines = _build_lines(aggregates, accounts)
+
+    total_debit = sum(line[1] for line in lines)
+    total_credit = sum(line[2] for line in lines)
+    # Balanced by construction, but confirmed rather than trusted — see
+    # module docstring and CLAUDE.md's "verify, don't just trust the
+    # arithmetic" discipline. A raised exception, not a bare `assert` —
+    # `assert` is stripped entirely under `python -O`, which would
+    # silently drop this financial-integrity guarantee exactly where it
+    # matters most; a real exception can't vanish that way.
+    if total_debit != total_credit:
+        raise PostingError(
+            f'"{payroll_run}" journal entry does not balance: debit {total_debit} != credit {total_credit}'
+        )
+
+    last_day = calendar.monthrange(payroll_run.year, payroll_run.month)[1]
+    entry_date = date(payroll_run.year, payroll_run.month, last_day)
+    description = f"Payroll — {calendar.month_name[payroll_run.month]} {payroll_run.year}"
+
+    with transaction.atomic():
+        # Fresh, locked re-read of the run's own status — closes the
+        # same cross-request race Payslip._payroll_run_is_posted() was
+        # fixed to close in hr Session 6 (a second concurrent approval
+        # attempt must never create a second entry for an already-Posted
+        # run), rather than trusting the payroll_run object the caller
+        # already had in memory.
+        locked_run = PayrollRun.objects.select_for_update().get(pk=payroll_run.pk)
+        if locked_run.status != "ready_for_review":
+            raise PostingError(
+                f'Cannot post "{locked_run}" — status is {locked_run.get_status_display()}, '
+                f"not Ready for Review (posted by someone else already)."
+            )
+
+        entry = JournalEntry.objects.create(
+            campus=locked_run.branch, entry_date=entry_date, description=description, created_by=created_by,
+        )
+        for position, (account, debit, credit, line_description) in enumerate(lines):
+            JournalLine.objects.create(
+                entry=entry, position=position, account=account, debit=debit, credit=credit,
+                description=line_description,
+            )
+
+        locked_run.status = "posted"
+        locked_run.save()
+
+    return entry

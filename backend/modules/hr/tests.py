@@ -20,6 +20,8 @@ from django.contrib.auth.models import Group, User
 from django.db import IntegrityError
 from django.test import TestCase
 
+from modules.admissions.models import Campus
+
 from . import documents as hr_documents
 from . import storage as hr_storage
 from .documents import DocumentGenerationError, DocumentLifecycleError
@@ -33,7 +35,8 @@ STATUTORY_EFFECTIVE_FROM = date(2025, 1, 1)  # matches migration 0002's seeded r
 
 
 def _make_payroll_run(month=9, year=2026, branch="Main"):
-    return PayrollRun.objects.create(branch=branch, month=month, year=year, status="draft")
+    campus, _ = Campus.objects.get_or_create(name=branch)
+    return PayrollRun.objects.create(branch=campus, month=month, year=year, status="draft")
 
 
 def _make_employee(employee_number, first_name="Test", surname="Employee"):
@@ -430,18 +433,23 @@ class PayrollRunCreateViewTests(TestCase):
     def setUp(self):
         self.processor = _make_user("processor", ["Payroll Processor"])
         self.client.login(username="processor", password="pw12345")
+        self.campus, _ = Campus.objects.get_or_create(name="Main")
 
     def test_creates_run_and_redirects_to_detail(self):
-        response = self.client.post("/hr/payroll-runs/create/", {"branch": "Main", "month": 9, "year": 2026})
-        run = PayrollRun.objects.get(branch="Main", month=9, year=2026)
+        response = self.client.post(
+            "/hr/payroll-runs/create/", {"branch": self.campus.pk, "month": 9, "year": 2026},
+        )
+        run = PayrollRun.objects.get(branch=self.campus, month=9, year=2026)
         self.assertRedirects(response, f"/hr/payroll-runs/{run.pk}/")
 
     def test_duplicate_branch_month_year_is_rejected_with_clear_error(self):
         _make_payroll_run(month=9, year=2026, branch="Main")
-        response = self.client.post("/hr/payroll-runs/create/", {"branch": "Main", "month": 9, "year": 2026})
+        response = self.client.post(
+            "/hr/payroll-runs/create/", {"branch": self.campus.pk, "month": 9, "year": 2026},
+        )
         self.assertEqual(response.status_code, 200)  # re-rendered form, not a redirect
         self.assertIn("already exists", response.context["errors"]["non_field"])
-        self.assertEqual(PayrollRun.objects.filter(branch="Main", month=9, year=2026).count(), 1)
+        self.assertEqual(PayrollRun.objects.filter(branch=self.campus, month=9, year=2026).count(), 1)
 
 
 class PayrollRunGeneratePayslipsViewTests(TestCase):
@@ -585,6 +593,41 @@ class PayrollRunLifecycleTests(TestCase):
         self.run.refresh_from_db()
         self.assertEqual(self.run.status, "posted")
         self.assertRedirects(response, f"/hr/payroll-runs/{self.run.pk}/")
+
+        # Merge Phase 2 Session 2 — approving now really posts a
+        # JournalEntry, not just a status flip. See
+        # modules.finance.tests.PostPayrollRunTests for thorough coverage
+        # of post_payroll_run() itself; this just confirms the wiring.
+        from modules.finance.models import JournalEntry
+        entry = JournalEntry.objects.get(description=f"Payroll — September {self.run.year}")
+        self.assertEqual(entry.campus, self.run.branch)
+        # gross, net, ssnit(employee), employer-ssnit-expense, ssnit(employer),
+        # tier2, paye — 7 lines; iou/fines are both 0 for this employee, so
+        # those two optional lines are correctly absent.
+        self.assertEqual(entry.lines.count(), 7)
+        total_debit = sum(line.debit for line in entry.lines.all())
+        total_credit = sum(line.credit for line in entry.lines.all())
+        self.assertEqual(total_debit, total_credit)
+
+    def test_second_approve_attempt_is_rejected_not_a_duplicate_entry(self):
+        """A PayrollRun that's already Posted must never be postable
+        again — reject via the same status check, and confirm no second
+        JournalEntry gets created."""
+        from modules.finance.models import JournalEntry
+
+        self.client.login(username="processor", password="pw12345")
+        self.client.post(f"/hr/payroll-runs/{self.run.pk}/submit/")
+        self.client.logout()
+
+        self.client.login(username="approver", password="pw12345")
+        self.client.post(f"/hr/payroll-runs/{self.run.pk}/approve/")
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, "posted")
+        self.assertEqual(JournalEntry.objects.count(), 1)
+
+        response = self.client.post(f"/hr/payroll-runs/{self.run.pk}/approve/")
+        self.assertIn("error", response.context)
+        self.assertEqual(JournalEntry.objects.count(), 1)  # still just one — no duplicate
 
     def test_approve_requires_ready_for_review_status(self):
         self.client.login(username="approver", password="pw12345")

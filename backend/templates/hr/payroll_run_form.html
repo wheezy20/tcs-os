@@ -10,9 +10,15 @@
 <form method="post" class="space-y-4 bg-white border border-brandborder rounded-lg p-6">
   {% csrf_token %}
   <div>
-    <label class="block text-sm font-medium mb-1">Branch</label>
-    <input type="text" name="branch" value="{{ values.branch|default:'' }}"
-           class="w-full border border-brandborder rounded px-3 py-2" />
+    <label class="block text-sm font-medium mb-1">Campus</label>
+    <select name="branch" class="w-full border border-brandborder rounded px-3 py-2">
+      <option value="">Select a campus…</option>
+      {% for campus in campuses %}
+      <option value="{{ campus.pk }}" {% if values.branch_id == campus.pk|stringformat:'s' %}selected{% endif %}>
+        {{ campus.name }}
+      </option>
+      {% endfor %}
+    </select>
     {% if errors.branch %}<p class="text-red-600 text-sm mt-1">{{ errors.branch }}</p>{% endif %}
   </div>
   <div class="grid grid-cols-2 gap-4">

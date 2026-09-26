@@ -1,9 +1,10 @@
 """Coverage for the finance module's chart of accounts and double-entry
-bookkeeping models (Merge Phase 2, Session 1), plus a confirmation that
-the ReferenceCounter move (admissions -> tcs_os.reference_counter) is a
-pure relocation — see modules/admissions/tests.py for admissions' own
-unchanged test count, and tcs_os/reference_counter.py's docstring for
-the real key formats these tests exercise.
+bookkeeping models (Merge Phase 2, Session 1), posting a PayrollRun to
+the ledger (Session 2), plus a confirmation that the ReferenceCounter
+move (admissions -> tcs_os.reference_counter) is a pure relocation —
+see modules/admissions/tests.py for admissions' own unchanged test
+count, and tcs_os/reference_counter.py's docstring for the real key
+formats these tests exercise.
 """
 
 from datetime import date
@@ -18,6 +19,7 @@ from modules.admissions.models import Campus
 from tcs_os.reference_counter import ReferenceCounter
 
 from .models import Account, Expense, ExpenseCategory, JournalEntry, JournalLine
+from .posting import PostingError, post_payroll_run
 
 
 def _make_user(username="accountant"):
@@ -315,3 +317,148 @@ class ReferenceCounterRelocationTests(TestCase):
         self.assertEqual(ReferenceCounter.next_for("TEST-KEY-A"), 1)
         self.assertEqual(ReferenceCounter.next_for("TEST-KEY-B"), 1)
         self.assertEqual(ReferenceCounter.next_for("TEST-KEY-A"), 2)
+
+
+class PostPayrollRunTests(TestCase):
+    """Merge Phase 2, Session 2 — posts a PayrollRun's payslips to the
+    ledger as ONE aggregated JournalEntry. A realistic multi-employee
+    run: Emmanuel Ansah's real, independently-verified ERP ground-truth
+    payslip (see modules.hr.tests.EmmanuelAnsahGroundTruthTests — basic
+    6,500, all pays_* true, no overtime/allowances/fines/iou) generated
+    via the actual calculate_payslip(), plus a second, hand-constructed
+    payslip with non-zero fines/iou so those two optional lines are
+    exercised too. Every expected aggregate/line figure below is
+    independent, hand-added arithmetic on these two payslips' own
+    fields — not derived by calling post_payroll_run() and trusting its
+    own output."""
+
+    def setUp(self):
+        from modules.hr.models import Employee, EmployeePayConfig, PayrollRun, Payslip
+        from modules.hr.payroll import calculate_payslip
+
+        self.user = _make_user("accountant2")
+        self.campus, _ = Campus.objects.get_or_create(name="Main")
+        self.run = PayrollRun.objects.create(branch=self.campus, month=9, year=2026, status="draft")
+
+        ansah = Employee.objects.create(
+            employee_number="EMP-POST-ANSAH", first_name="Emmanuel", surname="Ansah",
+            basic_salary=Decimal("0"), employment_status="active",
+        )
+        EmployeePayConfig.objects.create(
+            employee=ansah, basic_salary=Decimal("6500.00"), pays_ssnit=True, pays_tier2=True, pays_paye=True,
+            effective_from=date(2025, 1, 1), approval_status="approved",
+        )
+        Payslip.objects.create(payroll_run=self.run, employee=ansah, **calculate_payslip(ansah, self.run))
+
+        mensah = Employee.objects.create(
+            employee_number="EMP-POST-MENSAH", first_name="Kofi", surname="Mensah",
+            basic_salary=Decimal("0"), employment_status="active",
+        )
+        # Hand-constructed, not via calculate_payslip — deliberately so
+        # this test's expected aggregate doesn't depend on trusting the
+        # same function it's meant to independently exercise fines/iou
+        # against. basic 3000: ssnit 0.5%=15.00, tier2 5%=150.00,
+        # ssnit_employer 13%=390.00 (all real statutory percentages,
+        # just hand-applied here); paye/fines/iou are plain chosen
+        # figures for this test.
+        Payslip.objects.create(
+            payroll_run=self.run, employee=mensah,
+            basic_salary=Decimal("3000.00"), overtime_pay=Decimal("0"), total_allowances=Decimal("0"),
+            gross_salary=Decimal("3000.00"), ssnit=Decimal("15.00"), tier2=Decimal("150.00"),
+            paye=Decimal("200.00"), ssnit_employer=Decimal("390.00"), fines=Decimal("50.00"),
+            iou=Decimal("100.00"), total_deductions=Decimal("515.00"), net_pay=Decimal("2485.00"),
+        )
+
+        self.run.status = "ready_for_review"
+        self.run.save()
+
+    def test_entry_balances_and_every_line_is_correct(self):
+        entry = post_payroll_run(self.run, created_by=self.user)
+
+        self.assertEqual(entry.campus, self.campus)
+        self.assertEqual(entry.entry_date, date(2026, 9, 30))  # last calendar day of the run's month
+        self.assertEqual(entry.description, "Payroll — September 2026")
+        self.assertEqual(entry.created_by, self.user)
+
+        lines = {line.account.code: line for line in entry.lines.all()}
+        self.assertEqual(set(lines), {"5140", "2300", "2310", "5145", "2320", "2330", "1350", "4910"})
+        # 2310 (SSNIT Payable) carries BOTH the employee and employer
+        # portions as two separate lines on the same account — confirm
+        # both are present, not collapsed into one.
+        ssnit_payable_lines = [line for line in entry.lines.all() if line.account.code == "2310"]
+        self.assertEqual(len(ssnit_payable_lines), 2)
+
+        self.assertEqual(lines["5140"].debit, Decimal("9500.00"))   # gross: 6500 + 3000
+        self.assertEqual(lines["5140"].credit, Decimal("0.00"))
+        self.assertEqual(lines["2300"].credit, Decimal("7493.37"))  # net: 5008.37 + 2485.00
+        self.assertEqual(lines["5145"].debit, Decimal("1235.00"))   # employer ssnit: 845 + 390
+        self.assertEqual(lines["2320"].credit, Decimal("475.00"))   # tier2: 325 + 150
+        self.assertEqual(lines["2330"].credit, Decimal("1334.13"))  # paye: 1134.13 + 200
+        self.assertEqual(lines["1350"].credit, Decimal("100.00"))   # iou: 0 + 100
+        self.assertEqual(lines["4910"].credit, Decimal("50.00"))    # fines: 0 + 50
+        ssnit_amounts = sorted(line.credit for line in ssnit_payable_lines)
+        self.assertEqual(ssnit_amounts, [Decimal("47.50"), Decimal("1235.00")])  # employee 32.50+15, employer 845+390
+
+        total_debit = sum(line.debit for line in entry.lines.all())
+        total_credit = sum(line.credit for line in entry.lines.all())
+        self.assertEqual(total_debit, total_credit)
+        self.assertEqual(total_debit, Decimal("10735.00"))
+
+    def test_run_status_flips_to_posted(self):
+        post_payroll_run(self.run, created_by=self.user)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, "posted")
+
+    def test_zero_value_lines_are_never_created(self):
+        """Both test payslips have pays_paye/ssnit/tier2 all true and
+        nonzero, so this run's own entry has no zero-value line to
+        check — a dedicated single-employee, no-fines/no-iou run
+        confirms iou/fines really are omitted, not just present-with-
+        zero (which would violate JournalLine's own CHECK constraint
+        anyway, but this confirms it's skipped deliberately, not by
+        accident relying on that constraint to fail loudly)."""
+        from modules.hr.models import Employee, EmployeePayConfig, PayrollRun, Payslip
+        from modules.hr.payroll import calculate_payslip
+
+        run = PayrollRun.objects.create(branch=self.campus, month=10, year=2026, status="draft")
+        employee = Employee.objects.create(
+            employee_number="EMP-POST-NOFINES", first_name="Ama", surname="Boateng",
+            basic_salary=Decimal("0"), employment_status="active",
+        )
+        EmployeePayConfig.objects.create(
+            employee=employee, basic_salary=Decimal("6500.00"), pays_ssnit=True, pays_tier2=True, pays_paye=True,
+            effective_from=date(2025, 1, 1), approval_status="approved",
+        )
+        Payslip.objects.create(payroll_run=run, employee=employee, **calculate_payslip(employee, run))
+        run.status = "ready_for_review"
+        run.save()
+
+        entry = post_payroll_run(run, created_by=self.user)
+        codes = {line.account.code for line in entry.lines.all()}
+        self.assertNotIn("1350", codes)  # no iou
+        self.assertNotIn("4910", codes)  # no fines
+
+    def test_cannot_post_a_draft_run(self):
+        self.run.status = "draft"
+        self.run.save()
+        with self.assertRaises(PostingError):
+            post_payroll_run(self.run, created_by=self.user)
+
+    def test_cannot_post_a_run_with_no_payslips(self):
+        empty_run_campus, _ = Campus.objects.get_or_create(name="Annex")
+        from modules.hr.models import PayrollRun as HrPayrollRun
+        empty_run = HrPayrollRun.objects.create(
+            branch=empty_run_campus, month=11, year=2026, status="ready_for_review",
+        )
+        with self.assertRaises(PostingError):
+            post_payroll_run(empty_run, created_by=self.user)
+
+    def test_second_post_attempt_is_rejected_not_a_duplicate_entry(self):
+        post_payroll_run(self.run, created_by=self.user)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, "posted")
+        self.assertEqual(JournalEntry.objects.filter(campus=self.campus).count(), 1)
+
+        with self.assertRaises(PostingError):
+            post_payroll_run(self.run, created_by=self.user)
+        self.assertEqual(JournalEntry.objects.filter(campus=self.campus).count(), 1)  # still just one

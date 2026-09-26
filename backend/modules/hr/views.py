@@ -21,6 +21,9 @@ from django.db import IntegrityError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
+from modules.admissions.models import Campus
+from modules.finance.posting import PostingError, post_payroll_run
+
 from . import documents, storage
 from .models import DOCUMENT_KIND_CHOICES, Employee, EmployeeGeneratedDocument, PayrollRun, PayrollRunLockedError, Payslip
 from .payroll import PayrollConfigError, calculate_payslip
@@ -50,16 +53,20 @@ class PayrollRunCreateView(HrStaffRequiredMixin, View):
     permission_required = "hr.can_process_payroll"
 
     def get(self, request):
-        return render(request, "hr/payroll_run_form.html", {"errors": {}, "values": {}})
+        return render(
+            request, "hr/payroll_run_form.html",
+            {"errors": {}, "values": {}, "campuses": Campus.objects.all()},
+        )
 
     def post(self, request):
-        branch = (request.POST.get("branch") or "").strip()
+        branch_id = request.POST.get("branch")
         month = request.POST.get("month")
         year = request.POST.get("year")
 
         errors = {}
-        if not branch:
-            errors["branch"] = "Branch is required."
+        branch = Campus.objects.filter(pk=branch_id).first() if branch_id else None
+        if branch is None:
+            errors["branch"] = "Campus is required."
         try:
             month = int(month)
             if not 1 <= month <= 12:
@@ -77,7 +84,10 @@ class PayrollRunCreateView(HrStaffRequiredMixin, View):
         if errors:
             return render(
                 request, "hr/payroll_run_form.html",
-                {"errors": errors, "values": {"branch": branch, "month": month, "year": year}},
+                {
+                    "errors": errors, "campuses": Campus.objects.all(),
+                    "values": {"branch_id": branch_id, "month": month, "year": year},
+                },
             )
 
         try:
@@ -91,7 +101,8 @@ class PayrollRunCreateView(HrStaffRequiredMixin, View):
                 request, "hr/payroll_run_form.html",
                 {
                     "errors": {"non_field": f"A payroll run already exists for {branch} {month:02d}/{year}."},
-                    "values": {"branch": branch, "month": month, "year": year},
+                    "campuses": Campus.objects.all(),
+                    "values": {"branch_id": branch_id, "month": month, "year": year},
                 },
             )
 
@@ -226,9 +237,13 @@ class PayrollRunSubmitView(HrStaffRequiredMixin, View):
 
 
 class PayrollRunApproveView(HrStaffRequiredMixin, View):
-    """POST-only. Ready for Review -> Posted. Posted means locked only —
-    no journal-entry/Finance posting here, that's Merge Phase 2 and
-    explicitly out of scope for this session."""
+    """POST-only. Ready for Review -> Posted. Merge Phase 2 Session 2
+    wires this up to real ledger posting: approving now actually calls
+    finance.posting.post_payroll_run(), which builds the aggregated
+    JournalEntry and flips the run's status — status flip and ledger
+    entry commit together or not at all (see that function's own
+    transaction.atomic() block), not two separate steps that could
+    diverge."""
 
     permission_required = "hr.can_approve_payroll"
 
@@ -240,8 +255,13 @@ class PayrollRunApproveView(HrStaffRequiredMixin, View):
                 {"run": run, "error": f'Cannot approve — "{run}" is not Ready for Review.'},
             )
 
-        run.status = "posted"
-        run.save()
+        try:
+            post_payroll_run(run, created_by=request.user)
+        except PostingError as exc:
+            return render(
+                request, "hr/payroll_run_action_result.html",
+                {"run": run, "error": str(exc)},
+            )
         return redirect("hr:payroll-run-detail", pk=run.pk)
 
 

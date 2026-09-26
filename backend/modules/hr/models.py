@@ -125,10 +125,15 @@ class EmployeePayConfig(models.Model):
 
 
 class PayrollRun(models.Model):
-    """One payroll cycle for one branch/month/year. `branch` is a plain
-    CharField for now — no Branch model exists yet anywhere in TCS OS, and
-    introducing one is out of scope for this port; revisit if a second
-    module ever needs to relate to branches structurally.
+    """One payroll cycle for one branch/month/year. `branch` FKs to
+    admissions.Campus (Merge Phase 2 Session 2) — the same "reference
+    the module that owns the entity" pattern already used for
+    finance.Expense/JournalEntry/ExpenseCategory, rather than the plain
+    CharField this field started as in Session 1. Migrated with a clean
+    schema change, not a data migration: no real payroll has ever run
+    (the ERP itself has only run test payroll), so there was no string
+    branch data worth preserving/converting. PROTECT: a Campus shouldn't
+    vanish out from under a PayrollRun that references it.
 
     Session 6 — the two custom permissions below gate the payroll workflow
     views (modules/hr/views.py): can_process_payroll (create a run,
@@ -147,7 +152,9 @@ class PayrollRun(models.Model):
         ("posted", "Posted"),
     ]
 
-    branch = models.CharField(max_length=100)
+    branch = models.ForeignKey(
+        "admissions.Campus", on_delete=models.PROTECT, related_name="payroll_runs",
+    )
     month = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
     year = models.PositiveIntegerField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
