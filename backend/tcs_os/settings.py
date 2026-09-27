@@ -7,6 +7,7 @@ Module-specific config belongs in that module's own app, not here.
 
 from pathlib import Path
 import environ
+from django.urls import reverse_lazy
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -207,7 +208,17 @@ REST_FRAMEWORK = {
 UNFOLD = {
     "SITE_TITLE": "Treasures Christian School — Admin",
     "SITE_HEADER": "Treasures Christian School",
-    "SITE_SUBHEADER": "Admissions",
+    # SITE_SUBHEADER is currently INERT — this Unfold version's own
+    # navigation_header.html only renders it via site_icon.html, which is
+    # only used when SITE_LOGO is unset; this project always sets
+    # SITE_LOGO, so the site_logo.html branch is taken instead and
+    # SITE_SUBHEADER never reaches the page (confirmed by rendering
+    # /admin/ and checking the response — was already true for the old
+    # "Admissions" value too, not something this change introduced).
+    # Kept set to "Operations" (rather than deleted) so it's ready the day
+    # SITE_LOGO configuration changes in a way that surfaces it again —
+    # don't spend time "fixing" this without checking this comment first.
+    "SITE_SUBHEADER": "Operations",
     "SITE_URL": "/",
     "SITE_LOGO": {
         "light": "modules.admissions.branding.logo_light",
@@ -239,6 +250,133 @@ UNFOLD = {
             "900": "#0A373A",
             "950": "#081415",
         },
+    },
+    # Curated sidebar, grouped by module. Unfold's default (no SIDEBAR at
+    # all) lists every registered model flat, alphabetical by app — fine
+    # with one module, unusable with three. show_all_applications: False
+    # hides everything not listed below; show_search/command_search keep
+    # the handful of models deliberately left off this list (internal/
+    # system tables staff never navigate to directly: Capacity,
+    # ReferenceCounter, ApplicationDraft, TransactionalEmail) reachable by
+    # search rather than removed from admin entirely.
+    #
+    # finance's models (Expense, Account, JournalEntry) are deliberately
+    # NOT listed here — modules/finance has no admin.py yet (a known,
+    # already-flagged gap, see docs/CONSTRAINTS.md), so there's no admin
+    # changelist to link to. Adding finance to this nav is this session's
+    # job the day that admin.py exists, not before.
+    "SIDEBAR": {
+        "show_search": True,
+        "command_search": True,
+        "show_all_applications": False,
+        "navigation": [
+            {
+                "title": "Admissions",
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": "Applications",
+                        "icon": "assignment",
+                        "link": reverse_lazy("admin:admissions_application_changelist"),
+                    },
+                    {
+                        "title": "Families",
+                        "icon": "family_restroom",
+                        "link": reverse_lazy("admin:admissions_family_changelist"),
+                    },
+                    {
+                        "title": "Students",
+                        "icon": "school",
+                        "link": reverse_lazy("admin:admissions_student_changelist"),
+                    },
+                    {
+                        "title": "Guardians",
+                        "icon": "supervisor_account",
+                        "link": reverse_lazy("admin:admissions_guardian_changelist"),
+                    },
+                    {
+                        "title": "Leads",
+                        "icon": "contact_page",
+                        "link": reverse_lazy("admin:admissions_lead_changelist"),
+                    },
+                    {
+                        "title": "Email Campaigns",
+                        "icon": "campaign",
+                        "link": reverse_lazy("admin:admissions_emailcampaign_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "HR & Payroll",
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": "Employees",
+                        "icon": "badge",
+                        "link": reverse_lazy("admin:hr_employee_changelist"),
+                    },
+                    {
+                        "title": "Pay Configs",
+                        "icon": "account_balance_wallet",
+                        "link": reverse_lazy("admin:hr_employeepayconfig_changelist"),
+                    },
+                    {
+                        "title": "Payroll Runs",
+                        "icon": "receipt_long",
+                        "link": reverse_lazy("admin:hr_payrollrun_changelist"),
+                    },
+                    {
+                        "title": "Payslips",
+                        "icon": "description",
+                        "link": reverse_lazy("admin:hr_payslip_changelist"),
+                    },
+                    {
+                        "title": "Allowance Types",
+                        "icon": "category",
+                        "link": reverse_lazy("admin:hr_allowancetype_changelist"),
+                    },
+                    {
+                        "title": "PAYE Bands",
+                        "icon": "percent",
+                        "link": reverse_lazy("admin:hr_payeband_changelist"),
+                    },
+                    {
+                        "title": "Statutory Rates",
+                        "icon": "policy",
+                        "link": reverse_lazy("admin:hr_statutoryrate_changelist"),
+                    },
+                    {
+                        "title": "Contract Templates",
+                        "icon": "article",
+                        "link": reverse_lazy("admin:hr_contracttemplate_changelist"),
+                    },
+                    {
+                        "title": "Generated Documents",
+                        "icon": "folder_copy",
+                        "link": reverse_lazy("admin:hr_employeegenerateddocument_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "Administration",
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": "Staff Accounts",
+                        "icon": "person",
+                        "link": reverse_lazy("admin:auth_user_changelist"),
+                    },
+                    {
+                        "title": "Groups & Permissions",
+                        "icon": "admin_panel_settings",
+                        "link": reverse_lazy("admin:auth_group_changelist"),
+                    },
+                ],
+            },
+        ],
     },
 }
 
