@@ -197,10 +197,15 @@ throughout, so no back-pay or compliance issue.
       correct. Both new commands are dev/test-database-only (approving
       the run posts a real `JournalEntry` to the finance ledger) —
       stated in their own docstrings.
-- [ ] Session 2: A real payroll month run in both systems in parallel,
-      line-by-line payslip comparison, extending Session 1's parity
-      check to full confirmation for all four employees (currently only
-      Emmanuel Ansah is confirmed)
+- [x] Session 2: Parity extended to two more test payslips pulled from
+      the ERP's live test payroll run (Abena Konadu Owusu, Yaw Darko
+      Asamoah) — both match TCS OS exactly, to the cent, on every
+      field. Confirmed with Eyram that the ERP has never run real
+      (non-test) payroll, so this is as far as parity validation can
+      go; see `docs/JOURNAL.md`'s 2026-09-27 "Merge Phase 3 Session 2"
+      entry for the full picture, including what's still unconfirmed
+      (Ebenezer Addo/Ama Owusu/Kojo Boadu) and untested (overtime,
+      allowances, fines, IOU, higher PAYE bands).
 - [ ] Session 3: Cutover — retire the ERP's Cloudflare Worker and its
       Supabase project
 

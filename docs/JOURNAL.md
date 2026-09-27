@@ -872,3 +872,46 @@ via `StaffRequiredMixin`, not a redirect loop); and separately confirmed
 an approver-only user (`can_approve_payroll`, no `can_process_payroll`)
 can now reach the list via the primary nav, gets a 200, and correctly
 does not see the "New Payroll Run" button. Commit `6152e32`.
+
+---
+
+## 2026-09-27 — Merge Phase 3 Session 2: parity extended, confirmed test-only
+
+Two more payslips — Abena Konadu Owusu (basic 1,900.00) and Yaw Darko
+Asamoah (basic 1,700.00) — were pulled directly from the ERP's real,
+live, currently-Posted September 2026 payroll run (not a seed fixture)
+and fed into TCS OS's `calculate_payslip()` with matching
+`EmployeePayConfig` records. Every field — SSNIT, Tier 2, PAYE, employer
+SSNIT, total deductions, net pay — matched the ERP's own computed
+payslip exactly, to the cent, for both employees.
+
+Confirmed directly with Eyram: every employee on that ERP run (these
+two, plus Ama Serwaa Boateng, Efua Adutwumwaa Frimpong, Kwesi Nyarko
+Mensah, and the QWE/TEST QA rows) is test data he entered himself to
+exercise the system, not real staff pay. This matches, not contradicts,
+Session 1's finding that "no real payroll history exists in the
+ERP... it has only ever run test payroll." There is no genuine
+real-employee payroll run anywhere in either system to parallel-run
+against.
+
+Given that, Session 2's original framing — "a real payroll month run in
+both systems in parallel, full confirmation for all four employees" —
+can't literally be satisfied, since that real month doesn't exist. What
+this session and Session 1 together actually establish: calculation-
+engine parity confirmed on three independent test cases (Emmanuel Ansah
+from the seed fixture; Abena Konadu Owusu and Yaw Darko Asamoah from
+the live ERP's own test run), all agreeing to the cent on
+SSNIT/Tier 2/PAYE/net pay. Ebenezer Addo, Ama Owusu, and Kojo Boadu
+(seed fixture) remain unconfirmed — no ERP-side payslip was ever pulled
+for them, and now likely never will be, since the seed fixture wasn't
+sourced from a real ERP run to begin with.
+
+Not exercised by any confirmed case, on either system: overtime pay,
+allowances, fines, IOU, or the higher PAYE bands — all three confirmed
+cases are basic-salary-only, mid-band. Flagging this so "matches to
+the cent" isn't read as covering paths it hasn't touched. Recommend a
+spot-check against the ERP the first time a real payroll month
+actually uses one of those fields.
+
+Closing Merge Phase 3 Session 2 on this basis — there's no more real
+data to gather — per Eyram's instruction to proceed to Session 3.
