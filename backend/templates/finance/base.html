@@ -36,14 +36,29 @@
 <style>[x-cloak] { display: none !important; }</style>
 </head>
 <body class="font-body bg-brandbg text-[#1A2E2E] min-h-screen">
-<header class="bg-white border-b border-brandborder px-6 py-4 flex items-center justify-between">
-  <h1 class="font-heading text-xl text-primary">TCS OS — Accounting</h1>
-  {% if user.is_authenticated %}
-  <div class="text-sm text-gray-600">
-    {{ user.get_full_name|default:user.username }}
-    · <a href="/admin/logout/" class="underline hover:text-primary">Log out</a>
+<header class="bg-white border-b border-brandborder px-6 py-4">
+  <div class="flex items-center justify-between">
+    <h1 class="font-heading text-xl text-primary">TCS OS — Accounting</h1>
+    {% if user.is_authenticated %}
+    <div class="text-sm text-gray-600">
+      {{ user.get_full_name|default:user.username }}
+      · <a href="/admin/logout/" class="underline hover:text-primary">Log out</a>
+    </div>
+    {% endif %}
   </div>
-  {% endif %}
+  {# Shared top nav between the staff-facing areas — kept byte-for-byte
+     identical to templates/hr/base.html's copy. Active section is
+     highlighted off request.resolver_match.app_name, so it's correct
+     regardless of which specific hr/finance page rendered this base.
+     The Admin link never highlights from here (Django admin renders its
+     own Unfold templates, never this base.html), which is correct. #}
+  <nav class="flex gap-1 mt-3 text-sm">
+    <a href="{% url 'hr:payroll-run-create' %}"
+       class="px-3 py-1.5 rounded {% if request.resolver_match.app_name == 'hr' %}bg-primary text-white{% else %}text-gray-600 hover:text-primary{% endif %}">Payroll</a>
+    <a href="{% url 'finance:account-list' %}"
+       class="px-3 py-1.5 rounded {% if request.resolver_match.app_name == 'finance' %}bg-primary text-white{% else %}text-gray-600 hover:text-primary{% endif %}">Accounting</a>
+    <a href="{% url 'admin:index' %}" class="px-3 py-1.5 rounded text-gray-600 hover:text-primary">Admin</a>
+  </nav>
 </header>
 <main class="max-w-5xl mx-auto p-6">
   {% block content %}{% endblock %}
