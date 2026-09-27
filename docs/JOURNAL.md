@@ -725,3 +725,150 @@ touch PLAN.md's cutover language — that's Session 3's job, gated on a
 full-parity comparison table, which this session does not yet have
 (only 1 of 4 employees is confirmed; the other 3 need a real ERP
 payslip pulled before they count).
+
+---
+
+## 2026-09-27 — Curated Django admin sidebar navigation
+
+Standalone UI polish, not tied to any merge-phase session numbering —
+see `docs/PLAN.md`'s new "DONE — Staff UI navigation pass" section.
+
+Added `UNFOLD["SIDEBAR"]` to `backend/tcs_os/settings.py`, replacing
+Unfold's default (no `SIDEBAR` config at all, which lists every
+registered model flat, alphabetical by app — workable with one module,
+not with three). Curated into three groups, each item a
+`reverse_lazy()` link to a real admin changelist:
+
+- **Admissions** — Applications, Families, Students, Guardians, Leads,
+  Email Campaigns.
+- **HR & Payroll** — Employees, Pay Configs, Payroll Runs, Payslips,
+  Allowance Types, PAYE Bands, Statutory Rates, Contract Templates,
+  Generated Documents.
+- **Administration** — Staff Accounts (`auth.User`), Groups &
+  Permissions (`auth.Group`).
+
+`show_all_applications: False` keeps only these curated groups
+visible; `show_search`/`command_search` stay `True` so models
+deliberately left off the curated list (admissions' internal/system
+tables — Capacity, ReferenceCounter, ApplicationDraft,
+TransactionalEmail) are still reachable by search rather than removed
+from admin entirely. finance's models (`Expense`, `Account`,
+`JournalEntry`) are deliberately NOT included — `modules/finance` has
+no `admin.py` yet, so there's no changelist to link to; this is a
+known, already-flagged gap, not something this session should have
+invented an admin registration to close.
+
+Also changed `SITE_SUBHEADER` from the stale `"Admissions"` to
+`"Operations"` — except this turned out to be **inert** in the
+installed version of django-unfold: tracing `navigation_header.html`,
+the subheader only renders via `site_icon.html`, which is only used
+when `SITE_LOGO` is *not* configured. This project always configures
+`SITE_LOGO` (light/dark logo images), so the `site_logo.html` branch is
+taken instead, which has no subheader slot at all. Confirmed by
+rendering `/admin/` with a real superuser via Django's test `Client`
+and checking the response — the string never appears, and this was
+already true for the old `"Admissions"` value too, not something this
+change introduced. Kept the setting (not deleted) with a comment
+explaining why, so nobody spends time "fixing" it again without
+reading that comment first — a cheap, honest way to close out a
+cosmetic label that isn't buying anything right now.
+
+A code-reviewer pass caught two real hr models missing from the
+curated list with no stated justification: `ContractTemplate` (actively
+authored content — a human writes real letter/contract text there, per
+its own admin docstring, not a passive audit log) and
+`EmployeeGeneratedDocument` (same generated/audit-only shape as
+`Payslip`, which was already curated, so leaving it off while including
+`Payslip` was inconsistent on the comment's own stated logic). Both
+added to the HR & Payroll group.
+
+Verified: `manage.py check` clean, `reverse_lazy()` confirmed safe at
+settings-import time (it's a lazy proxy — only calls `reverse()` at
+first string coercion, which happens at template-render time, long
+after Django's app/URL loading completes; a bare `reverse()` here would
+have broken). Rendered `/admin/` with a real test superuser and
+confirmed all 17 curated nav item labels actually appear in the
+response. Commit `8eef01f`.
+
+---
+
+## 2026-09-27 — Shared top nav bar on hr/finance staff templates
+
+`backend/templates/hr/base.html` and `backend/templates/finance/base.html`
+were previously identical apart from per-module title/h1 text and one
+max-width class, and each `<header>` held only a title and a logout
+link — no way to move between the two staff-facing areas, or back to
+admin, without editing the URL bar by hand.
+
+Added a nav row inside the existing `<header>` in both files — three
+links (Payroll, Accounting, Admin) — kept byte-for-byte identical
+between the two templates. The active section highlights via
+`request.resolver_match.app_name` compared against `'hr'`/`'finance'`;
+the Admin link never highlights from either page, correctly, since
+Django admin renders its own Unfold templates, never this base.html.
+Brand tokens/fonts/Tailwind config were left untouched — only the nav
+row was added.
+
+A code-reviewer pass flagged the Admin link hardcoding `"/admin/"` as a
+plain string while the other two links used named URL reversal
+(`{% url 'hr:...' %}` / `{% url 'finance:...' %}`) — fixed to
+`{% url 'admin:index' %}` for consistency and resilience if that
+prefix ever moves. The same pass confirmed `request.resolver_match`
+being `None` is not a realistic risk from either app's own views (both
+reached through ordinary CBV dispatch with `app_name` set), and that
+even if it somehow were `None`, Django's template variable resolution
+fails silently to "no match" rather than raising — so this can never
+throw, at worst it fails to highlight.
+
+Verified: rendered `/hr/payroll-runs/create/` and `/finance/accounts/`
+with a real staff user via Django's test `Client`, confirming all three
+nav links' hrefs and labels appear in each response, and that the
+active-section highlight lands on the correct link in each direction —
+not just eyeballing the HTML. Commit `fb27348`.
+
+---
+
+## 2026-09-27 — PayrollRunListView: the missing payroll entry point
+
+Closed a real gap surfaced by the previous two UI sessions: a
+`PayrollRun` was only ever reachable by already knowing its `pk` (a
+direct link, or the admin changelist) — there was no page listing all
+runs.
+
+Added `PayrollRunListView` to `backend/modules/hr/views.py`, right
+before `PayrollRunCreateView`: lists every `PayrollRun`
+(`select_related("branch")`, no explicit `order_by()` needed since
+`PayrollRun.Meta.ordering` already sorts by `-year`/`-month`/`branch`),
+gated with the same any-of-two-permissions `has_permission()` override
+as the existing `PayrollRunDetailView` (`hr.can_process_payroll` or
+`hr.can_approve_payroll`) — a processor needs this to find a Draft run
+to keep working on, an approver needs it to find a Ready for Review run
+to act on. Deliberately unpaginated, per the view's own docstring: one
+row per branch/month/year, and TCS runs monthly payroll for a handful
+of branches — worth revisiting if that assumption stops holding.
+
+Added the URL (`payroll-runs/`, name `payroll-run-list`) as the first
+line in `backend/modules/hr/urls.py`'s `urlpatterns`, ahead of
+`payroll-runs/create/` — no shadowing risk, Django path matching
+requires the full segment. Added
+`backend/templates/hr/payroll_run_list.html`: a table of
+branch/period/status-badge/payslip-count/view-link, with a "New
+Payroll Run" button gated on `{% if perms.hr.can_process_payroll %}`.
+
+A code-reviewer pass caught that the shared top nav's "Payroll" link
+(added in the previous commit) still pointed at `hr:payroll-run-create`,
+not the new list view — meaning an approver with only
+`can_approve_payroll` (no `can_process_payroll`) would 403 on the
+primary nav despite the whole point of this view being to give them an
+entry point. Fixed in both `templates/hr/base.html` and
+`templates/finance/base.html`.
+
+Verified: `manage.py check` and `makemigrations --check --dry-run` both
+clean (no model changes); `modules.hr`'s full test suite (66 tests)
+passes; rendered `/hr/payroll-runs/` for a real superuser (200, the
+real seeded "Main" 9/2026 Posted run with 4 payslips showing correctly)
+and for a plain staff user with neither payroll permission (a real 403
+via `StaffRequiredMixin`, not a redirect loop); and separately confirmed
+an approver-only user (`can_approve_payroll`, no `can_process_payroll`)
+can now reach the list via the primary nav, gets a 200, and correctly
+does not see the "New Payroll Run" button. Commit `6152e32`.

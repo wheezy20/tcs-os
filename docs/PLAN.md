@@ -206,6 +206,29 @@ throughout, so no back-pay or compliance issue.
 
 ---
 
+## DONE — Staff UI navigation pass (2026-09-27)
+
+Standalone, cuts across every module rather than belonging to one merge
+phase. Fixed three real navigational gaps found once HR/Finance's
+staff-facing pages existed to expose them:
+
+- Curated Django admin sidebar (`UNFOLD["SIDEBAR"]`), grouped by module
+  with icons, replacing the default flat alphabetical-by-app list —
+  commit `8eef01f`.
+- A shared top nav bar (Payroll / Accounting / Admin, active-state
+  highlighted) added to `hr/base.html` and `finance/base.html`, which
+  previously had no way to move between the two staff-facing areas or
+  back to admin — commit `fb27348`.
+- `PayrollRunListView` — previously a `PayrollRun` was only reachable
+  by already knowing its `pk`; there was no page listing all runs —
+  commit `6152e32`.
+
+See `docs/JOURNAL.md`'s 2026-09-27 entries for the full writeup,
+including a dead `SITE_SUBHEADER` config setting found and documented
+in place (not fixed — see that entry for why).
+
+---
+
 ## NEXT — New modules (order not yet fixed; build whichever TCS actually
 ## needs first)
 
