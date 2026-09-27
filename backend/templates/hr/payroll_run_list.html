@@ -1,0 +1,47 @@
+{% extends "hr/base.html" %}
+{% block title %}Payroll Runs{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="font-heading text-2xl text-primary">Payroll Runs</h2>
+  {% if perms.hr.can_process_payroll %}
+  <a href="{% url 'hr:payroll-run-create' %}"
+     class="bg-primary hover:bg-primary-hover text-white text-sm font-medium px-4 py-2 rounded">
+    New Payroll Run
+  </a>
+  {% endif %}
+</div>
+
+<section class="bg-white border border-brandborder rounded-lg p-6">
+  {% if runs %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-gray-500 border-b border-brandborder">
+        <th class="py-2">Branch</th><th>Period</th><th>Status</th><th>Payslips</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr class="border-b border-brandborder">
+        <td class="py-2">{{ run.branch }}</td>
+        <td>{{ run.month }}/{{ run.year }}</td>
+        <td>
+          <span class="px-3 py-1 rounded-full text-xs font-medium
+            {% if run.status == 'draft' %}bg-gray-100 text-gray-700
+            {% elif run.status == 'ready_for_review' %}bg-yellow-100 text-yellow-800
+            {% else %}bg-green-100 text-green-800{% endif %}">
+            {{ run.get_status_display }}
+          </span>
+        </td>
+        <td>{{ run.payslips.count }}</td>
+        <td class="text-right">
+          <a href="{% url 'hr:payroll-run-detail' run.pk %}" class="text-primary hover:underline">View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="text-gray-500">No payroll runs yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

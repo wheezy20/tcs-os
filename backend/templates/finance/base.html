@@ -53,7 +53,7 @@
      The Admin link never highlights from here (Django admin renders its
      own Unfold templates, never this base.html), which is correct. #}
   <nav class="flex gap-1 mt-3 text-sm">
-    <a href="{% url 'hr:payroll-run-create' %}"
+    <a href="{% url 'hr:payroll-run-list' %}"
        class="px-3 py-1.5 rounded {% if request.resolver_match.app_name == 'hr' %}bg-primary text-white{% else %}text-gray-600 hover:text-primary{% endif %}">Payroll</a>
     <a href="{% url 'finance:account-list' %}"
        class="px-3 py-1.5 rounded {% if request.resolver_match.app_name == 'finance' %}bg-primary text-white{% else %}text-gray-600 hover:text-primary{% endif %}">Accounting</a>

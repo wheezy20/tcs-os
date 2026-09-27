@@ -4,12 +4,13 @@ from .views import (
     EmployeeDetailView, EmployeeDocumentGenerateView, EmployeeGeneratedDocumentDiscardView,
     EmployeeGeneratedDocumentIssueView, EmployeeGeneratedDocumentRecordAcceptanceView,
     EmployeeGeneratedDocumentViewLinkView, PayrollRunApproveView, PayrollRunCreateView, PayrollRunDetailView,
-    PayrollRunGeneratePayslipsView, PayrollRunRejectView, PayrollRunSubmitView,
+    PayrollRunGeneratePayslipsView, PayrollRunListView, PayrollRunRejectView, PayrollRunSubmitView,
 )
 
 app_name = "hr"
 
 urlpatterns = [
+    path("payroll-runs/", PayrollRunListView.as_view(), name="payroll-run-list"),
     path("payroll-runs/create/", PayrollRunCreateView.as_view(), name="payroll-run-create"),
     path("payroll-runs/<int:pk>/", PayrollRunDetailView.as_view(), name="payroll-run-detail"),
     path("payroll-runs/<int:pk>/generate/", PayrollRunGeneratePayslipsView.as_view(), name="payroll-run-generate"),

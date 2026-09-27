@@ -36,6 +36,28 @@ class HrStaffRequiredMixin(StaffRequiredMixin):
     file/tests.py keeps working unchanged."""
 
 
+class PayrollRunListView(HrStaffRequiredMixin, View):
+    """The missing entry point into the payroll workflow — previously a
+    run was only reachable by already knowing its pk (a direct link, or
+    the admin changelist). Viewable by either role, same has_permission()
+    override as PayrollRunDetailView and for the same reason: a processor
+    needs this to find a Draft run to keep working on, an approver needs
+    it to find a Ready for Review run to act on.
+
+    No pagination yet — one row per branch/month/year and TCS runs
+    monthly payroll for a handful of branches, so this stays small for a
+    long time; worth revisiting if that assumption stops holding."""
+
+    permission_required = ("hr.can_process_payroll", "hr.can_approve_payroll")
+
+    def has_permission(self):
+        return any(self.request.user.has_perm(perm) for perm in self.get_permission_required())
+
+    def get(self, request):
+        runs = PayrollRun.objects.select_related("branch").all()
+        return render(request, "hr/payroll_run_list.html", {"runs": runs})
+
+
 class PayrollRunCreateView(HrStaffRequiredMixin, View):
     """GET renders the create form; POST creates the run. can_process_payroll
     only — approvers have nothing to do until a run reaches Ready for
