@@ -915,3 +915,44 @@ actually uses one of those fields.
 
 Closing Merge Phase 3 Session 2 on this basis — there's no more real
 data to gather — per Eyram's instruction to proceed to Session 3.
+
+---
+
+## 2026-09-28 — Fix GET-based logout links (hr/finance staff nav)
+
+Real bug, not a design change: `templates/hr/base.html` and
+`templates/finance/base.html` both linked "Log out" as a plain
+`<a href="/admin/logout/">` — a GET request. Django 5.2's
+`LogoutView` only accepts POST/OPTIONS, so clicking that link in a
+real browser 405s instead of logging out. Worth being honest about
+how this was found: it surfaced from a code-reviewer pass during the
+same-day login/logout copy session (`ddbfca1`), not from anyone
+actually clicking "Log out" and hitting the error — the bug had been
+live since HR Session 6 first built that nav.
+
+Replaced the `<a>` in both files with a small inline
+`<form method="post" action="{% url 'admin:logout' %}">` +
+`{% csrf_token %}` + `<button type="submit">`, styled to match the old
+link's appearance exactly (`underline align-baseline ... text-sm
+text-gray-600 hover:text-primary`, with `bg-transparent border-0 p-0
+m-0` stripping the browser's native button chrome) — a functional fix,
+not a visual one. A second code-reviewer pass on the fix itself
+confirmed Tailwind's Preflight reset (loaded via the CDN build both
+files already use) neutralizes the usual button-vs-anchor styling gaps
+(font, line-height, color), and caught one real remaining gap —
+`display` isn't reset by Preflight, so a native `<button>`'s default
+`inline-block` could in principle sit at a slightly different baseline
+than the original `<a>`'s plain `inline` — closed by adding
+`align-baseline` explicitly rather than relying on it looking right by
+incidental luck.
+
+Verified: `manage.py check` and `makemigrations --check --dry-run`
+both clean (no model changes). Rendered `/hr/payroll-runs/` and
+`/finance/accounts/` with a real staff user and confirmed no bare
+`<a href="/admin/logout/"` remains in either response, and a
+`<form method="post" action="/admin/logout/">` is present in both.
+POSTed to `/admin/logout/` from a real logged-in test-Client session
+(200), then confirmed the session was actually terminated — a
+follow-up request to a permission-gated hr page redirected to login
+(302), not just that the endpoint returned 200. Full `modules.hr` +
+`modules.finance` suite (131 tests) passes.

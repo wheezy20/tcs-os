@@ -42,7 +42,12 @@
     {% if user.is_authenticated %}
     <div class="text-sm text-gray-600">
       {{ user.get_full_name|default:user.username }}
-      · <a href="/admin/logout/" class="underline hover:text-primary">Log out</a>
+      · <form method="post" action="{% url 'admin:logout' %}" class="inline">
+        {% csrf_token %}
+        <button type="submit" class="underline align-baseline bg-transparent border-0 p-0 m-0 cursor-pointer text-sm text-gray-600 hover:text-primary">
+          Log out
+        </button>
+      </form>
     </div>
     {% endif %}
   </div>
