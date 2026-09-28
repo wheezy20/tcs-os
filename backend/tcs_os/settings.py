@@ -206,7 +206,7 @@ REST_FRAMEWORK = {
 # Logo/icon: callables in admissions/branding.py, not hardcoded path strings —
 # see that module's docstring for why (staticfiles manifest hashing).
 UNFOLD = {
-    "SITE_TITLE": "Treasures Christian School — Admin",
+    "SITE_TITLE": "TCS OS",
     "SITE_HEADER": "Treasures Christian School",
     # SITE_SUBHEADER is currently INERT — this Unfold version's own
     # navigation_header.html only renders it via site_icon.html, which is
